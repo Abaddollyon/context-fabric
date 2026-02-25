@@ -643,6 +643,7 @@ docker run --rm -i -v context-fabric-data:/data/.context-fabric context-fabric
 ```
 context-fabric/
 ├── src/
+│   ├── index.ts           # Entry point
 │   ├── server.ts          # MCP server (11 tools)
 │   ├── engine.ts          # ContextEngine orchestrator (store, recall, orient, ...)
 │   ├── time.ts            # TimeService (IANA tz, anchors, expression resolver)

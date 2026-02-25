@@ -728,9 +728,77 @@ describe('ContextEngine Integration', () => {
   });
   
   // ============================================================================
+  // Orientation
+  // ============================================================================
+
+  describe('orient', () => {
+    it('should return a valid OrientationContext', async () => {
+      const result = await engine.orient('UTC');
+
+      expect(result.time).toBeDefined();
+      expect(result.time.timezone).toBe('UTC');
+      expect(result.projectPath).toBe(context.projectPath);
+      expect(typeof result.summary).toBe('string');
+      expect(result.summary.length).toBeGreaterThan(0);
+    });
+
+    it('should report first session when no previous sessions', async () => {
+      const result = await engine.orient('UTC');
+
+      expect(result.offlineGap).toBeNull();
+      expect(result.summary).toContain('First session');
+    });
+
+    it('should detect offline gap on second call', async () => {
+      // First call records the session
+      await engine.orient('UTC');
+
+      // Second call should detect a gap (even if very small)
+      const result = await engine.orient('UTC');
+
+      expect(result.offlineGap).not.toBeNull();
+      expect(typeof result.offlineGap!.durationMs).toBe('number');
+      expect(typeof result.offlineGap!.durationHuman).toBe('string');
+      expect(typeof result.offlineGap!.from).toBe('string');
+      expect(typeof result.offlineGap!.to).toBe('string');
+      expect(typeof result.offlineGap!.memoriesAdded).toBe('number');
+    });
+
+    it('should count memories added during offline gap', async () => {
+      // First orient to record session
+      await engine.orient('UTC');
+
+      // Store a memory (simulates offline work)
+      await engine.store('A decision made offline', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+      });
+
+      // Second orient should count 1 memory added
+      const result = await engine.orient('UTC');
+
+      expect(result.offlineGap).not.toBeNull();
+      expect(result.offlineGap!.memoriesAdded).toBeGreaterThanOrEqual(1);
+      expect(result.recentMemories.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('should use system timezone when none provided', async () => {
+      const result = await engine.orient();
+
+      expect(result.time.timezone).toBeDefined();
+      expect(result.time.timezone.length).toBeGreaterThan(0);
+    });
+
+    it('should include project path in summary', async () => {
+      const result = await engine.orient('UTC');
+
+      expect(result.summary).toContain('Project:');
+    });
+  });
+
+  // ============================================================================
   // Cleanup
   // ============================================================================
-  
+
   describe('cleanup', () => {
     it('should clean up all resources on close', async () => {
       await seedTestMemories(engine, sessionId);

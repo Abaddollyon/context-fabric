@@ -37,6 +37,12 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
+/**
+ * L3 Semantic Memory — cross-project vector store backed by SQLite.
+ * Stores embeddings alongside memories and performs cosine-similarity
+ * recall at query time. Includes a time-based decay mechanism that
+ * gradually removes stale, unaccessed memories.
+ */
 export class SemanticMemoryLayer {
   private db: DatabaseSync;
   private embedder: EmbeddingService;
@@ -115,6 +121,7 @@ export class SemanticMemoryLayer {
     this.stmtGetEmbedding = this.db.prepare('SELECT embedding FROM semantic_memories WHERE id = ?');
   }
 
+  /** Store a memory along with its computed embedding vector. */
   async store(
     content: string,
     type: MemoryType,
@@ -159,6 +166,7 @@ export class SemanticMemoryLayer {
     return memory;
   }
 
+  /** Retrieve the top-N most semantically similar memories for a query string. */
   async recall(query: string, limit = 10): Promise<ScoredMemory[]> {
     const queryEmbedding = await this.embedder.embed(query);
     const rows = this.stmtGetAll.all() as unknown as DbRow[];
@@ -177,6 +185,7 @@ export class SemanticMemoryLayer {
     return row ? this.rowToMemory(row) : undefined;
   }
 
+  /** Bump the access count and recalculate relevance score for a memory. */
   async touch(id: string): Promise<void> {
     const row = this.stmtGetById.get(id) as DbRow | undefined;
     if (!row) return;
@@ -188,6 +197,7 @@ export class SemanticMemoryLayer {
     this.stmtUpdateAccess.run(newCount, now, newScore, now, id);
   }
 
+  /** Find memories similar to an existing memory by its ID. */
   async findSimilar(memoryId: string, limit = 5): Promise<ScoredMemory[]> {
     const source = this.stmtGetEmbedding.get(memoryId) as { embedding: string } | undefined;
     if (!source) return [];
@@ -218,6 +228,11 @@ export class SemanticMemoryLayer {
       .map((row) => this.rowToMemory(row));
   }
 
+  /**
+   * Apply time-based decay to all memories. Memories below a relevance
+   * threshold of 0.1 are permanently deleted. Returns the number of
+   * memories evaluated.
+   */
   async applyDecay(): Promise<number> {
     const rows = this.stmtGetAll.all() as unknown as DbRow[];
     if (rows.length === 0) return 0;

@@ -1,4 +1,7 @@
-// time.ts — TimeService using only Node.js built-in Intl API
+/**
+ * TimeService — timezone-aware time utilities using only the Node.js Intl API.
+ * Provides time anchors, date resolution, formatting, and world-clock conversion.
+ */
 
 export interface TimeAnchor {
   epochMs: number;
@@ -183,13 +186,20 @@ const DOW_INDEX: Record<string, number> = {
 
 // ─── TimeService ─────────────────────────────────────────────────────────────
 
+/**
+ * Timezone-aware time utilities using only the Node.js built-in Intl API.
+ * Provides time anchors, conversions, natural-language date resolution,
+ * and human-friendly formatting — all without external dependencies.
+ */
 export class TimeService {
   // ── Static helpers ──────────────────────────────────────────────────────
 
+  /** Return the system's IANA timezone (e.g. "America/New_York"). */
   static systemTimezone(): string {
     return Intl.DateTimeFormat().resolvedOptions().timeZone;
   }
 
+  /** Check whether a string is a valid IANA timezone identifier. */
   static isValidTimezone(tz: string): boolean {
     try {
       Intl.DateTimeFormat(undefined, { timeZone: tz });
@@ -201,6 +211,7 @@ export class TimeService {
 
   // ── Core methods ────────────────────────────────────────────────────────
 
+  /** Build a TimeAnchor for the current moment. */
   now(timezone?: string): TimeAnchor {
     const tz = timezone ?? TimeService.systemTimezone();
     const epochMs = Date.now();
@@ -213,6 +224,7 @@ export class TimeService {
     return this._buildAnchor(epochMs, tz);
   }
 
+  /** Convert an epoch-ms timestamp into a specific timezone. */
   convert(epochMs: number, timezone: string): TimeConversion {
     return {
       epochMs,
@@ -224,6 +236,12 @@ export class TimeService {
     };
   }
 
+  /**
+   * Resolve a natural-language date expression to epoch ms.
+   * Supports: "now", "today", "yesterday", "tomorrow", "start/end of day",
+   * "start/end of week", "next Monday" .. "last Sunday", ISO strings, and
+   * bare epoch-ms numbers.
+   */
   resolve(expression: string, timezone?: string): number {
     const tz    = timezone ?? TimeService.systemTimezone();
     const nowMs = Date.now();
@@ -270,6 +288,7 @@ export class TimeService {
     throw new Error(`TimeService.resolve: unrecognised expression "${expression}"`);
   }
 
+  /** Format a millisecond duration as a human-readable string (e.g. "3 hours 42 minutes"). */
   formatDuration(ms: number): string {
     const totalSeconds = Math.floor(Math.abs(ms) / 1000);
     const days    = Math.floor(totalSeconds / 86400);
@@ -287,6 +306,7 @@ export class TimeService {
     return parts.join(" ");
   }
 
+  /** Format a timestamp relative to now (e.g. "5 minutes ago", "in 2 hours"). */
   formatRelative(epochMs: number, nowMs: number = Date.now()): string {
     const diffMs = nowMs - epochMs;
     const absMs  = Math.abs(diffMs);
@@ -310,6 +330,7 @@ export class TimeService {
     return label(days, "day");
   }
 
+  /** Return a curated list of common IANA timezone identifiers. */
   commonZones(): string[] {
     return [
       // UTC

@@ -4,12 +4,11 @@
   "mcpServers": {
     "context-fabric": {
       "description": "Context Fabric - Semantic memory and context management",
-      "command": "bun",
+      "command": "node",
       "args": [
         "/path/to/context-fabric/dist/server.js"
       ],
       "env": {
-        "CHROMA_URL": "http://localhost:8000",
         "CONTEXT_FABRIC_DIR": "~/.context-fabric",
         "LOG_LEVEL": "info",
         "L1_DEFAULT_TTL": "3600",
@@ -29,10 +28,8 @@
         "run",
         "--rm",
         "-i",
-        "--network=host",
-        "-v", "${HOME}/.context-fabric:/root/.context-fabric",
-        "-e", "CHROMA_URL=http://localhost:8000",
-        "context-fabric:latest"
+        "-v", "context-fabric-data:/data/.context-fabric",
+        "context-fabric"
       ],
       "env": {},
       "disabled": true
@@ -45,11 +42,8 @@
       "config": {
         "mcpServers": {
           "context-fabric": {
-            "command": "bun",
-            "args": ["/home/username/workspace/context-fabric/dist/server.js"],
-            "env": {
-              "CHROMA_URL": "http://localhost:8000"
-            }
+            "command": "node",
+            "args": ["/path/to/context-fabric/dist/server.js"]
           }
         }
       }
@@ -60,11 +54,8 @@
       "config": {
         "mcpServers": {
           "context-fabric": {
-            "command": "bun",
-            "args": ["/Users/username/workspace/context-fabric/dist/server.js"],
-            "env": {
-              "CHROMA_URL": "http://localhost:8000"
-            }
+            "command": "node",
+            "args": ["/path/to/context-fabric/dist/server.js"]
           }
         }
       }
@@ -75,32 +66,9 @@
       "config": {
         "mcpServers": {
           "context-fabric": {
-            "command": "bun",
-            "args": ["/path/to/context-fabric/dist/server.js"],
-            "env": {
-              "CHROMA_URL": "http://localhost:8000"
-            }
+            "command": "node",
+            "args": ["/path/to/context-fabric/dist/server.js"]
           }
-        }
-      }
-    },
-    "continue": {
-      "description": "Configuration for Continue.dev",
-      "file": "~/.continue/config.json",
-      "config": {
-        "experimental": {
-          "modelContextProtocolServers": [
-            {
-              "transport": {
-                "type": "stdio",
-                "command": "bun",
-                "args": ["/path/to/context-fabric/dist/server.js"],
-                "env": {
-                  "CHROMA_URL": "http://localhost:8000"
-                }
-              }
-            }
-          ]
         }
       }
     }

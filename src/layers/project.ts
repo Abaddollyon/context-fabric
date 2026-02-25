@@ -9,6 +9,11 @@ import { MemoryLayer, type Memory, type MemoryType, type MemoryMetadata, type Su
 import * as fs from 'fs';
 import * as path from 'path';
 
+/**
+ * L2 Project Memory — persistent, project-scoped storage backed by SQLite.
+ * Uses node:sqlite (built-in since Node.js 22.5) for zero native dependencies.
+ * Supports full CRUD, tag-based filtering, text search, and summarization.
+ */
 export class ProjectMemoryLayer {
   private db: DatabaseSync;
   private projectPath: string;
@@ -145,10 +150,12 @@ export class ProjectMemoryLayer {
     `);
   }
 
+  /** No-op — node:sqlite is synchronous, so the layer is always ready. */
   async ready(): Promise<void> {
     // node:sqlite is synchronous — always ready
   }
 
+  /** Persist a new memory and its tags into SQLite. */
   async store(content: string, type: MemoryType, metadata?: object, tags?: string[]): Promise<Memory> {
     const id = uuidv4();
     const now = Date.now();
@@ -200,6 +207,7 @@ export class ProjectMemoryLayer {
     return row ? this.rowToMemory(row) : undefined;
   }
 
+  /** Find memories that have ALL the given tags (AND logic). */
   async findByTags(tags: string[]): Promise<Memory[]> {
     if (tags.length === 0) return [];
 
@@ -222,6 +230,7 @@ export class ProjectMemoryLayer {
     return rows.map(r => this.rowToMemory(r));
   }
 
+  /** Substring search across memory content (case-insensitive via LIKE). */
   async search(query: string): Promise<Memory[]> {
     if (!query.trim()) return [];
     const rows = this.stmtSearch.all(`%${query}%`) as DatabaseRow[];
@@ -277,6 +286,10 @@ export class ProjectMemoryLayer {
     return this.getAll(limit, 0);
   }
 
+  /**
+   * Archive old memories into a single summary entry.
+   * Deletes the originals after creating the summary.
+   */
   async summarize(olderThanDays: number): Promise<SummaryResult> {
     const cutoffTime = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
     const oldMemories = this.stmtGetOld.all(cutoffTime) as DatabaseRow[];
