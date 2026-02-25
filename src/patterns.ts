@@ -58,13 +58,17 @@ export class PatternExtractor {
 
     // Extract from L3 if available
     if (this.l3Layer) {
-      const semanticPatterns = await this.l3Layer.recall('code pattern convention', 20);
+      try {
+        const semanticPatterns = await this.l3Layer.recall('code pattern convention', 20);
 
-      for (const memory of semanticPatterns) {
-        const pattern = this.memoryToPattern(memory);
-        if (pattern) {
-          patterns.push(pattern);
+        for (const memory of semanticPatterns) {
+          const pattern = this.memoryToPattern(memory);
+          if (pattern) {
+            patterns.push(pattern);
+          }
         }
+      } catch {
+        // L3 recall can fail when the embedding model is unavailable — degrade gracefully
       }
     }
 

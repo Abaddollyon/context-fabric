@@ -3,6 +3,8 @@
  * Simulates a complete CLI session with context-fabric
  */
 
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ContextEngine } from '../../src/engine.js';
 import { MemoryLayer, MemoryType, CLIEvent } from '../../src/types.js';
@@ -13,6 +15,11 @@ import {
   sleep,
   assertValidContextWindow,
 } from '../utils.js';
+
+/** Skip L3 tests when the ONNX embedding model isn't available (e.g. CI) */
+const hasEmbeddingModel = existsSync(
+  resolve('local_cache', 'fast-bge-small-en', 'tokenizer.json')
+);
 
 describe('End-to-End: CLI Session Flow', () => {
   let projectPath: string;
@@ -260,7 +267,7 @@ describe('End-to-End: CLI Session Flow', () => {
   // Step 5: Pattern learned -> L3 code_pattern
   // ============================================================================
   
-  describe('Step 5: Pattern Learning', () => {
+  describe.skipIf(!hasEmbeddingModel)('Step 5: Pattern Learning', () => {
     it('should handle pattern_detected event', async () => {
       const event: CLIEvent = {
         type: 'pattern_detected',
@@ -666,7 +673,7 @@ export class UserService {
       // All operations completed successfully
     });
     
-    it('should support memory promotion workflow', async () => {
+    it.skipIf(!hasEmbeddingModel)('should support memory promotion workflow', async () => {
       // Create a working memory that turns out to be important
       const workingMem = await engine.store(
         'Important insight about performance',

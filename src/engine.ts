@@ -291,11 +291,15 @@ export class ContextEngine {
 
     // Search L3 (semantic) if included
     if (layers.includes(MemoryLayer.L3_SEMANTIC)) {
-      const l3Results = await this.l3.recall(query, limit);
-      for (const r of l3Results) {
-        if (this.matchesFilter(r, options.filter)) {
-          results.push({ ...r, layer: MemoryLayer.L3_SEMANTIC });
+      try {
+        const l3Results = await this.l3.recall(query, limit);
+        for (const r of l3Results) {
+          if (this.matchesFilter(r, options.filter)) {
+            results.push({ ...r, layer: MemoryLayer.L3_SEMANTIC });
+          }
         }
+      } catch {
+        // L3 recall can fail when the embedding model is unavailable — degrade gracefully
       }
     }
 
