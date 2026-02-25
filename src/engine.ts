@@ -243,8 +243,12 @@ export class ContextEngine {
         .map((m) => m.content)
         .join(' ');
 
-      const semanticResults = await this.l3.recall(query, 5);
-      l3Relevant.push(...semanticResults);
+      try {
+        const semanticResults = await this.l3.recall(query, 5);
+        l3Relevant.push(...semanticResults);
+      } catch {
+        // L3 recall can fail when the embedding model is unavailable — degrade gracefully
+      }
     }
 
     // Combine L2 and L3 for relevant memories

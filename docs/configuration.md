@@ -169,4 +169,4 @@ docker run --rm -v context-fabric-data:/data alpine tar czf - /data \
 
 ---
 
-[← Getting Started](getting-started.md) | [CLI Setup →](cli-setup.md) | [Back to README](../README.md)
+[← Getting Started](getting-started.md) | [Agent Integration →](agent-integration.md) | [Back to README](../README.md)

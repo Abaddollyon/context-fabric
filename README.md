@@ -142,6 +142,7 @@ Memories auto-route to the right layer. Scratchpad notes go to L1 (ephemeral). D
 | [Tools Reference](docs/tools-reference.md) | All 12 MCP tools with full parameter docs |
 | [Memory Types](docs/memory-types.md) | Type system, three layers, [smart routing](docs/memory-types.md#smart-router), [decay](docs/memory-types.md#decay-algorithm) |
 | [Configuration](docs/configuration.md) | Storage paths, TTL, embedding, environment variables |
+| [Agent Integration](docs/agent-integration.md) | System prompt instructions for automatic tool usage |
 | [Architecture](docs/architecture.md) | System internals, data flow, embedding strategy |
 | [Changelog](CHANGELOG.md) | Version history and migration notes |
 

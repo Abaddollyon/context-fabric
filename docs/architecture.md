@@ -472,4 +472,4 @@ flowchart TD
 
 ---
 
-[← Memory Types](memory-types.md) | [Configuration](configuration.md) | [Back to README](../README.md)
+[← Agent Integration](agent-integration.md) | [Configuration](configuration.md) | [Back to README](../README.md)
