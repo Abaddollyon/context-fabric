@@ -1,0 +1,250 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/spec/main/schema/mcp-schema.json",
+  "description": "Example MCP configuration for Context Fabric with multiple CLI tools",
+  "mcpServers": {
+    "context-fabric": {
+      "description": "Context Fabric - Semantic memory and context management",
+      "command": "bun",
+      "args": [
+        "/path/to/context-fabric/dist/server.js"
+      ],
+      "env": {
+        "CHROMA_URL": "http://localhost:8000",
+        "CONTEXT_FABRIC_DIR": "~/.context-fabric",
+        "LOG_LEVEL": "info",
+        "L1_DEFAULT_TTL": "3600",
+        "L3_DECAY_DAYS": "30"
+      },
+      "disabled": false,
+      "autoApprove": [
+        "context.getCurrent",
+        "context.getPatterns",
+        "context.ghost"
+      ]
+    },
+    "context-fabric-docker": {
+      "description": "Context Fabric via Docker (alternative setup)",
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "--network=host",
+        "-v", "${HOME}/.context-fabric:/root/.context-fabric",
+        "-e", "CHROMA_URL=http://localhost:8000",
+        "context-fabric:latest"
+      ],
+      "env": {},
+      "disabled": true
+    }
+  },
+  "_examples": {
+    "kimi": {
+      "description": "Configuration for Kimi Code CLI",
+      "file": "~/.kimi/mcp.json",
+      "config": {
+        "mcpServers": {
+          "context-fabric": {
+            "command": "bun",
+            "args": ["/home/username/workspace/context-fabric/dist/server.js"],
+            "env": {
+              "CHROMA_URL": "http://localhost:8000"
+            }
+          }
+        }
+      }
+    },
+    "claude": {
+      "description": "Configuration for Claude Desktop",
+      "file": "~/Library/Application Support/Claude/claude_desktop_config.json",
+      "config": {
+        "mcpServers": {
+          "context-fabric": {
+            "command": "bun",
+            "args": ["/Users/username/workspace/context-fabric/dist/server.js"],
+            "env": {
+              "CHROMA_URL": "http://localhost:8000"
+            }
+          }
+        }
+      }
+    },
+    "cursor": {
+      "description": "Configuration for Cursor IDE",
+      "file": "~/.cursor/mcp.json",
+      "config": {
+        "mcpServers": {
+          "context-fabric": {
+            "command": "bun",
+            "args": ["/path/to/context-fabric/dist/server.js"],
+            "env": {
+              "CHROMA_URL": "http://localhost:8000"
+            }
+          }
+        }
+      }
+    },
+    "continue": {
+      "description": "Configuration for Continue.dev",
+      "file": "~/.continue/config.json",
+      "config": {
+        "experimental": {
+          "modelContextProtocolServers": [
+            {
+              "transport": {
+                "type": "stdio",
+                "command": "bun",
+                "args": ["/path/to/context-fabric/dist/server.js"],
+                "env": {
+                  "CHROMA_URL": "http://localhost:8000"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "_toolExamples": {
+    "context.store": {
+      "description": "Store a new memory",
+      "examples": [
+        {
+          "name": "Store a bug fix",
+          "params": {
+            "type": "bug_fix",
+            "content": "Fixed null pointer by adding optional chaining",
+            "metadata": {
+              "title": "Null fix in user service",
+              "tags": ["bug", "null-safety"],
+              "confidence": 0.95
+            }
+          }
+        },
+        {
+          "name": "Store a code pattern",
+          "params": {
+            "type": "code_pattern",
+            "content": "Use Result<T,E> for error handling",
+            "metadata": {
+              "title": "Result Type Pattern",
+              "tags": ["typescript", "error-handling"],
+              "codeBlock": {
+                "code": "type Result<T,E> = {ok: true, value: T} | {ok: false, error: E}",
+                "language": "typescript"
+              }
+            }
+          }
+        },
+        {
+          "name": "Store temporary note (L1)",
+          "params": {
+            "type": "scratchpad",
+            "content": "Remember to update API docs",
+            "metadata": {
+              "tags": ["todo"]
+            },
+            "ttl": 3600
+          }
+        }
+      ]
+    },
+    "context.recall": {
+      "description": "Search for memories",
+      "examples": [
+        {
+          "name": "Basic search",
+          "params": {
+            "query": "authentication pattern",
+            "limit": 5,
+            "sessionId": "session-123"
+          }
+        },
+        {
+          "name": "Filtered search",
+          "params": {
+            "query": "error handling",
+            "limit": 10,
+            "threshold": 0.7,
+            "filter": {
+              "types": ["code_pattern", "bug_fix"],
+              "layers": [2, 3],
+              "tags": ["typescript"]
+            },
+            "sessionId": "session-123"
+          }
+        }
+      ]
+    },
+    "context.getCurrent": {
+      "description": "Get current context window",
+      "examples": [
+        {
+          "name": "Get full context",
+          "params": {
+            "sessionId": "session-123",
+            "currentFile": "src/auth.ts",
+            "projectPath": "/path/to/project"
+          }
+        }
+      ]
+    },
+    "context.reportEvent": {
+      "description": "Report a CLI event",
+      "examples": [
+        {
+          "name": "Report error",
+          "params": {
+            "event": {
+              "type": "error_occurred",
+              "payload": {
+                "error": "TypeError: Cannot read property of undefined",
+                "file": "src/user.ts",
+                "line": 42
+              },
+              "timestamp": "2026-02-24T10:00:00Z",
+              "sessionId": "session-123",
+              "cliType": "kimi",
+              "projectPath": "/path/to/project"
+            }
+          }
+        },
+        {
+          "name": "Report decision",
+          "params": {
+            "event": {
+              "type": "decision_made",
+              "payload": {
+                "decision": "Use PostgreSQL instead of MongoDB",
+                "rationale": "Better transactional integrity"
+              },
+              "timestamp": "2026-02-24T10:00:00Z",
+              "sessionId": "session-123",
+              "cliType": "claude",
+              "projectPath": "/path/to/project"
+            }
+          }
+        }
+      ]
+    },
+    "context.promote": {
+      "description": "Promote memory to higher layer",
+      "examples": [
+        {
+          "name": "Promote from L1 to L2",
+          "params": {
+            "memoryId": "uuid-of-l1-memory",
+            "fromLayer": 1
+          }
+        },
+        {
+          "name": "Promote from L2 to L3",
+          "params": {
+            "memoryId": "uuid-of-l2-memory",
+            "fromLayer": 2
+          }
+        }
+      ]
+    }
+  }
+}

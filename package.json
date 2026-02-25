@@ -1,0 +1,65 @@
+{
+  "name": "context-fabric",
+  "version": "0.4.0",
+  "description": "MCP server for agentic CLI memory — semantic context management and time-aware orientation across sessions",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "test:e2e": "vitest run tests/e2e",
+    "test:coverage": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:watch:unit": "vitest tests/unit",
+    "test:watch:integration": "vitest tests/integration",
+    "test:watch:e2e": "vitest tests/e2e"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Abaddollyon/context-fabric.git"
+  },
+  "homepage": "https://github.com/Abaddollyon/context-fabric",
+  "bugs": {
+    "url": "https://github.com/Abaddollyon/context-fabric/issues"
+  },
+  "license": "MIT",
+  "author": "Abaddollyon",
+  "keywords": [
+    "mcp",
+    "memory",
+    "context",
+    "cli",
+    "agent",
+    "semantic-search",
+    "embeddings",
+    "time",
+    "timezone",
+    "docker"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "fastembed": "^1.14.4",
+    "js-yaml": "^4.1.0",
+    "uuid": "^9.0.1",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^9.0.8",
+    "@vitest/coverage-v8": "^4.0.18",
+    "typescript": "^5.3.3",
+    "vitest": "^4.0.18"
+  }
+}

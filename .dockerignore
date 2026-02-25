@@ -1,0 +1,68 @@
+# Dependencies
+node_modules
+.pnp
+.pnp.js
+
+# Build output
+dist
+build
+*.tsbuildinfo
+
+# Testing
+tests
+*.test.ts
+*.spec.ts
+coverage
+.nyc_output
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Documentation (keep for context but not needed in container)
+docs/*.md
+!docs/README.md
+
+# Local data (mount as volume instead)
+# NOTE: local_cache is intentionally NOT excluded — the Dockerfile COPYs it
+# into the image so the ONNX embedding model is baked in and never downloaded at runtime.
+.context-fabric
+
+# Misc
+.dockerignore
+Dockerfile
+docker-compose*.yml
+.eslintrc
+.prettierrc
+.travis.yml
+.github

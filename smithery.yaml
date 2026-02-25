@@ -1,0 +1,127 @@
+# Smithery Configuration for Context Fabric
+# https://smithery.ai/docs/registry/smithery-yaml
+
+name: context-fabric
+version: 0.4.0
+description: |
+  MCP server for agentic CLI memory and time-aware orientation. Provides semantic
+  context management across sessions with a three-layer memory architecture
+  (working, project, semantic) and a built-in time engine with IANA timezone
+  support, natural-language date anchors, and offline-gap detection.
+
+  Integrates with Kimi, Claude Code, OpenCode, Codex, Gemini CLI, Cursor, and more.
+  Runs locally (Node.js 22.5+) or via Docker (cross-platform, zero host dependencies).
+
+homepage: https://github.com/Abaddollyon/context-fabric
+license: MIT
+
+runtime:
+  type: node
+  version: ">=22.5.0"
+
+installation:
+  # From source
+  method: source
+  path: .
+  build: npm run build
+  start: node dist/server.js
+
+  # Or via Docker (cross-platform)
+  # docker build -t context-fabric .
+  # docker run --rm -i -v context-fabric-data:/data/.context-fabric context-fabric
+
+commands:
+  start:
+    description: Start the MCP server
+    command: node dist/server.js
+
+  build:
+    description: Compile TypeScript
+    command: npm run build
+
+  test:
+    description: Run test suite
+    command: npm test
+
+env:
+  - name: CONTEXT_FABRIC_DIR
+    description: Storage directory for L2/L3 databases
+    default: ~/.context-fabric
+    required: false
+
+  - name: FASTEMBED_CACHE_PATH
+    description: ONNX model cache directory (pre-set in Docker image)
+    required: false
+
+  - name: LOG_LEVEL
+    description: Log level (debug, info, warn, error)
+    default: info
+    required: false
+
+tools:
+  - name: context.getCurrent
+    description: Get current context window for a session (working memories, relevant memories, patterns, suggestions, ghost messages)
+
+  - name: context.store
+    description: Store a memory — code pattern, bug fix, decision, convention, scratchpad, or relationship. SmartRouter auto-selects the layer.
+
+  - name: context.recall
+    description: Recall semantically similar memories by meaning, not just keywords. Searches all layers by default.
+
+  - name: context.time
+    description: Get the current time as a rich TimeAnchor with UTC offset, day/week boundaries, and ISO week number. Resolve natural-language date expressions or show the same moment in multiple timezones.
+
+  - name: context.orient
+    description: "Orientation loop — answers: Where am I in time? What happened while I was offline? What project am I in? Returns a summary, offline gap, and recent memories."
+
+  - name: context.summarize
+    description: Condense old memories into a summary entry to keep context lean.
+
+  - name: context.getPatterns
+    description: Get relevant code patterns for the current context, optionally filtered by language or file.
+
+  - name: context.reportEvent
+    description: Report CLI events (file opened, command executed, error occurred, etc.) for automatic memory capture.
+
+  - name: context.ghost
+    description: Get ghost messages — invisible context injections that provide relevant background without cluttering the conversation.
+
+  - name: context.promote
+    description: Promote a memory to a higher layer (L1→L2, L2→L3) to increase its persistence and scope.
+
+  - name: context.setup
+    description: Install and configure Context Fabric into any supported CLI's MCP config. Writes the config file automatically. Supports local (node) and Docker transports.
+
+documentation:
+  readme: README.md
+
+  features:
+    - Three-layer memory architecture (L1 working/RAM, L2 project/SQLite, L3 semantic/SQLite+cosine)
+    - Time engine with IANA timezone support, natural-language date anchors, offline-gap detection
+    - Orientation loop — session-start summary of time, project, and what changed while offline
+    - Automatic context injection via ghost messages
+    - Semantic search with fastembed-js ONNX embeddings (all-MiniLM-L6-v2)
+    - Pattern detection and storage
+    - Event-driven memory capture
+    - Smart routing — auto-selects the optimal layer for each memory
+    - Self-installing — AI calls context.setup to configure any supported CLI
+    - Docker transport — cross-platform stdio bridge, no host runtime required
+    - Zero native dependencies — uses Node.js built-in node:sqlite
+
+tags:
+  - mcp
+  - memory
+  - context
+  - time
+  - timezone
+  - cli
+  - agent
+  - semantic-search
+  - embeddings
+  - docker
+
+categories:
+  - memory
+  - context-management
+  - developer-tools
+  - time-management
