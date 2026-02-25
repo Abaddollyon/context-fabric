@@ -1,7 +1,7 @@
 {
   "name": "context-fabric",
   "version": "0.4.0",
-  "description": "MCP server for agentic CLI memory — semantic context management and time-aware orientation across sessions",
+  "description": "Persistent memory for AI coding agents. MCP server with semantic search, three-layer storage, and time-aware orientation.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
