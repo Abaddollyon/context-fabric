@@ -38,6 +38,7 @@ export class ProjectMemoryLayer {
   private stmtCount!: StatementSync;
   private stmtFindByTypePaginated!: StatementSync;
   private stmtCountByType!: StatementSync;
+  private stmtSetPinned!: StatementSync;
 
   constructor(projectPath: string, baseDir?: string) {
     this.projectPath = path.resolve(projectPath);
@@ -75,6 +76,14 @@ export class ProjectMemoryLayer {
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_type ON memories(type)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_created ON memories(created_at)');
 
+    // Migration: add pinned column if not present (v0.5.5)
+    const cols = (this.db.prepare('PRAGMA table_info(memories)').all() as Array<{ name: string }>)
+      .map(r => r.name);
+    if (!cols.includes('pinned')) {
+      this.db.exec('ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_pinned ON memories(pinned)');
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memory_tags (
         memory_id TEXT NOT NULL,
@@ -97,8 +106,8 @@ export class ProjectMemoryLayer {
 
   private prepareStatements(): void {
     this.stmtInsert = this.db.prepare(`
-      INSERT INTO memories (id, type, content, metadata, tags, created_at, updated_at, access_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO memories (id, type, content, metadata, tags, created_at, updated_at, access_count, pinned)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     this.stmtInsertTag = this.db.prepare(
@@ -134,7 +143,7 @@ export class ProjectMemoryLayer {
     );
 
     this.stmtGetOld = this.db.prepare(
-      `SELECT * FROM memories WHERE created_at <= ? AND type != 'summary' ORDER BY created_at ASC`
+      `SELECT * FROM memories WHERE created_at <= ? AND type != 'summary' AND pinned = 0 ORDER BY created_at ASC`
     );
 
     this.stmtDeleteById = this.db.prepare('DELETE FROM memories WHERE id = ?');
@@ -161,6 +170,8 @@ export class ProjectMemoryLayer {
     this.stmtCountByType = this.db.prepare(
       'SELECT COUNT(*) as count FROM memories WHERE type = ?'
     );
+
+    this.stmtSetPinned = this.db.prepare('UPDATE memories SET pinned = ? WHERE id = ?');
   }
 
   /** No-op — node:sqlite is synchronous, so the layer is always ready. */
@@ -169,7 +180,7 @@ export class ProjectMemoryLayer {
   }
 
   /** Persist a new memory and its tags into SQLite. */
-  async store(content: string, type: MemoryType, metadata?: object, tags?: string[]): Promise<Memory> {
+  async store(content: string, type: MemoryType, metadata?: object, tags?: string[], pinned = false): Promise<Memory> {
     const id = uuidv4();
     const now = Date.now();
 
@@ -192,6 +203,7 @@ export class ProjectMemoryLayer {
       createdAt: now,
       updatedAt: now,
       accessCount: 0,
+      pinned,
     };
 
     this.stmtInsert.run(
@@ -203,6 +215,7 @@ export class ProjectMemoryLayer {
       memory.createdAt as number,
       memory.updatedAt as number,
       memory.accessCount ?? 0,
+      pinned ? 1 : 0,
     );
 
     if (tags && tags.length > 0) {
@@ -278,6 +291,11 @@ export class ProjectMemoryLayer {
       for (const tag of updatedTags) {
         this.stmtInsertTag.run(id, tag);
       }
+    }
+
+    if (updates.pinned !== undefined) {
+      this.stmtSetPinned.run(updates.pinned ? 1 : 0, id);
+      updated.pinned = updates.pinned;
     }
 
     return updated;
@@ -449,6 +467,7 @@ export class ProjectMemoryLayer {
       updatedAt: row.updated_at as number,
       accessCount: (row.access_count as number) || 0,
       lastAccessedAt: (row.last_accessed_at as number | null) || undefined,
+      pinned: (row.pinned as number) === 1,
     };
   }
 }
