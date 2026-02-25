@@ -14,6 +14,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI for memory management
 - Metrics and analytics dashboard
 
+## [0.4.5] - 2026-02-25
+
+### Added
+- **Local code indexing** — new per-project code index that scans source files, extracts symbols, and stays up-to-date via file watching
+  - `src/indexer/code-index.ts` — Main `CodeIndex` class with SQLite schema, three search modes (text, symbol, semantic), smart chunking at symbol boundaries
+  - `src/indexer/scanner.ts` — File discovery via `git ls-files` with recursive readdir fallback, incremental mtime/hash diffing, binary detection
+  - `src/indexer/symbols.ts` — Regex-based symbol extraction for 8 languages (TS/JS, Python, Rust, Go, Java, C#, Ruby, C/C++)
+  - `src/indexer/watcher.ts` — `fs.watch({ recursive: true })` wrapper with per-file 500ms debouncing
+- **`context.searchCode` MCP tool** (tool #12) — search project source code by text, symbol name, or semantic similarity
+  - Supports filtering by language, file pattern, and symbol kind
+  - Returns file path, language, symbol metadata, chunk content, and similarity scores
+  - Index is built automatically on first use and refreshed on `context.orient` and `file_opened` events
+- **Shared `detectLanguage` utility** — extracted from `events.ts` into `scanner.ts` for reuse across indexer and event handler
+- **`getEmbeddingService()` getter** on `SemanticMemoryLayer` — shares the ONNX model instance between L3 and code index
+- **`codeIndex` config block** in `FabricConfig` — configurable `maxFileSizeBytes`, `maxFiles`, `chunkLines`, `chunkOverlap`, `debounceMs`, `watchEnabled`, `excludePatterns`
+- **Engine integration** — lazy `getCodeIndex()`, fire-and-forget `incrementalUpdate()` on `orient()`, `reindexFile()` on `file_opened` events, `close()` cleanup
+
+### Technical
+- All 478 tests pass (78 new + 400 existing) across unit, integration, and E2E suites
+- New test files: `symbols.test.ts` (19), `scanner.test.ts` (17), `code-index.test.ts` (unit: 19, integration: 5)
+- Added code index coverage to `engine.test.ts` (5 tests), `server.test.ts` (6 tests), `full-flow.test.ts` (5 tests)
+- Updated all docs to reflect 12 MCP tools (was 11)
+
 ## [0.4.0] - 2026-02-25
 
 ### Changed
@@ -138,7 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic type definitions
 - Development environment setup
 
-[Unreleased]: https://github.com/Abaddollyon/context-fabric/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Abaddollyon/context-fabric/compare/v0.4.5...HEAD
+[0.4.5]: https://github.com/Abaddollyon/context-fabric/compare/v0.4.0...v0.4.5
 [0.4.0]: https://github.com/Abaddollyon/context-fabric/compare/v0.2.0...v0.4.0
 [0.2.0]: https://github.com/Abaddollyon/context-fabric/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Abaddollyon/context-fabric/compare/v0.0.1...v0.1.0

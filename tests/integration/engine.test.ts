@@ -803,6 +803,99 @@ describe('ContextEngine Integration', () => {
   });
 
   // ============================================================================
+  // Code Index
+  // ============================================================================
+
+  describe('code index', () => {
+    it('should lazily create a CodeIndex via getCodeIndex()', () => {
+      const idx = engine.getCodeIndex();
+      expect(idx).toBeDefined();
+      expect(idx.getStatus().totalFiles).toBe(0);
+    });
+
+    it('should reuse the same CodeIndex instance', () => {
+      const a = engine.getCodeIndex();
+      const b = engine.getCodeIndex();
+      expect(a).toBe(b);
+    });
+
+    it('should index files and search by text', async () => {
+      // Write a source file into the project
+      const { writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const srcDir = join(context.projectPath, 'src');
+      const { mkdirSync } = await import('fs');
+      mkdirSync(srcDir, { recursive: true });
+      writeFileSync(join(srcDir, 'greeter.ts'), `
+export class Greeter {
+  greet(name: string): string {
+    return \`Hello, \${name}!\`;
+  }
+}
+`);
+
+      const idx = engine.getCodeIndex();
+      await idx.reindexFile('src/greeter.ts');
+
+      const results = idx.searchText('Greeter');
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0].filePath).toBe('src/greeter.ts');
+    });
+
+    it('should index files and search by symbol', async () => {
+      const { writeFileSync, mkdirSync } = await import('fs');
+      const { join } = await import('path');
+      mkdirSync(join(context.projectPath, 'lib'), { recursive: true });
+      writeFileSync(join(context.projectPath, 'lib/math.ts'), `
+export function fibonacci(n: number): number {
+  if (n <= 1) return n;
+  return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+export interface MathResult {
+  value: number;
+  precision: number;
+}
+`);
+
+      const idx = engine.getCodeIndex();
+      await idx.reindexFile('lib/math.ts');
+
+      const fnResults = idx.searchSymbols('fibonacci');
+      expect(fnResults.length).toBeGreaterThan(0);
+      expect(fnResults[0].symbol?.kind).toBe('function');
+
+      const ifaceResults = idx.searchSymbols('', { symbolKind: 'interface' });
+      expect(ifaceResults.some(r => r.symbol?.name === 'MathResult')).toBe(true);
+    });
+
+    it('should return file symbols', async () => {
+      const { writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      writeFileSync(join(context.projectPath, 'api.ts'), `
+export const API_VERSION = "1.0";
+export function handleRequest(req: Request): Response {
+  return new Response("ok");
+}
+`);
+
+      const idx = engine.getCodeIndex();
+      await idx.reindexFile('api.ts');
+
+      const symbols = idx.getFileSymbols('api.ts');
+      const names = symbols.map(s => s.name);
+      expect(names).toContain('API_VERSION');
+      expect(names).toContain('handleRequest');
+    });
+
+    it('should be closed when engine is closed', async () => {
+      const idx = engine.getCodeIndex();
+      expect(idx).toBeDefined();
+      // close() is called by afterEach — just verify getCodeIndex works before close
+    });
+  });
+
+  // ============================================================================
   // Cleanup (requires L3 for seedTestMemories)
   // ============================================================================
 

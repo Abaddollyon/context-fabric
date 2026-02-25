@@ -5,6 +5,7 @@
 
 import { CLIEvent, MemoryType, CLIEventType, Memory } from './types.js';
 import { ContextEngine } from './engine.js';
+import { detectLanguage } from './indexer/scanner.js';
 
 export interface EventResult {
   processed: boolean;
@@ -123,6 +124,14 @@ export class EventHandler {
         ttl: 3600, // 1 hour
       }
     );
+
+    // Fire-and-forget code index update for this file
+    try {
+      const idx = this.engine.getCodeIndex();
+      idx.reindexFile(path).catch(() => {/* non-critical */});
+    } catch {
+      /* non-critical */
+    }
 
     return {
       processed: true,
@@ -395,48 +404,11 @@ export class EventHandler {
   }
 
   /**
-   * Detect programming language from file path
+   * Detect programming language from file path.
+   * Delegates to the shared utility in indexer/scanner.
    */
   private detectLanguage(path: string): string {
-    const ext = path.split('.').pop()?.toLowerCase();
-
-    const langMap: Record<string, string> = {
-      'ts': 'typescript',
-      'tsx': 'typescript',
-      'js': 'javascript',
-      'jsx': 'javascript',
-      'py': 'python',
-      'rs': 'rust',
-      'go': 'go',
-      'java': 'java',
-      'rb': 'ruby',
-      'php': 'php',
-      'cs': 'csharp',
-      'cpp': 'cpp',
-      'c': 'c',
-      'h': 'c',
-      'hpp': 'cpp',
-      'swift': 'swift',
-      'kt': 'kotlin',
-      'scala': 'scala',
-      'md': 'markdown',
-      'json': 'json',
-      'yaml': 'yaml',
-      'yml': 'yaml',
-      'toml': 'toml',
-      'sh': 'bash',
-      'bash': 'bash',
-      'zsh': 'zsh',
-      'sql': 'sql',
-      'html': 'html',
-      'css': 'css',
-      'scss': 'scss',
-      'less': 'less',
-      'vue': 'vue',
-      'svelte': 'svelte',
-    };
-
-    return langMap[ext || ''] || 'text';
+    return detectLanguage(path);
   }
 
   /**

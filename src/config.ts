@@ -48,6 +48,16 @@ const DEFAULT_CONFIG: FabricConfig = {
   cli: {
     defaultCapabilities: DEFAULT_USER_PREFERENCES,
   },
+  codeIndex: {
+    enabled: true,
+    maxFileSizeBytes: 1_048_576, // 1MB
+    maxFiles: 10_000,
+    chunkLines: 150,
+    chunkOverlap: 10,
+    debounceMs: 500,
+    watchEnabled: true,
+    excludePatterns: [],
+  },
 };
 
 /**
@@ -86,6 +96,16 @@ cli:
     scratchpadRetentionHours: 24
     maxContextMemories: 20
     preferredEmbeddingModel: "fastembed-js"
+
+codeIndex:
+  enabled: true
+  maxFileSizeBytes: 1048576  # 1MB
+  maxFiles: 10000
+  chunkLines: 150
+  chunkOverlap: 10
+  debounceMs: 500
+  watchEnabled: true
+  excludePatterns: []
 `;
 }
 
@@ -150,6 +170,7 @@ function mergeConfig(
         ...override.cli?.defaultCapabilities,
       },
     },
+    codeIndex: { ...defaults.codeIndex, ...override.codeIndex },
   };
 }
 

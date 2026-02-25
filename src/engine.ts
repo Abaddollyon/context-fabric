@@ -25,6 +25,7 @@ import { EventHandler, EventResult } from './events.js';
 import { getConfig, initialize, getStoragePaths } from './config.js';
 import { TimeService } from './time.js';
 import type { OrientationContext, OfflineGap } from './types.js';
+import { CodeIndex, type IndexStatus } from './indexer/code-index.js';
 
 // ============================================================================
 // Type Definitions
@@ -94,6 +95,7 @@ export class ContextEngine {
   eventHandler: EventHandler;
   private logLevel: 'debug' | 'info' | 'warn' | 'error';
   private cleanupIntervalId: ReturnType<typeof setInterval> | null = null;
+  private codeIndex: CodeIndex | null = null;
 
   constructor(options: EngineOptions) {
     this.projectPath = options.projectPath;
@@ -141,6 +143,21 @@ export class ContextEngine {
   // ============================================================================
   // Core Operations
   // ============================================================================
+
+  /**
+   * Get or create the code index (lazy initialization).
+   * Shares the L3 embedding service to avoid loading the model twice.
+   */
+  getCodeIndex(): CodeIndex {
+    if (!this.codeIndex) {
+      this.codeIndex = new CodeIndex({
+        projectPath: this.projectPath,
+        embeddingService: this.config.codeIndex.enabled ? this.l3.getEmbeddingService() : null,
+        config: this.config.codeIndex,
+      });
+    }
+    return this.codeIndex;
+  }
 
   /**
    * Auto-route storage based on content type and metadata
@@ -483,6 +500,16 @@ export class ContextEngine {
       lines.push('First session in this project.');
     }
 
+    // Fire-and-forget code index update
+    if (this.config.codeIndex.enabled) {
+      try {
+        const idx = this.getCodeIndex();
+        idx.ensureReady().then(() => idx.incrementalUpdate()).catch(() => {/* non-critical */});
+      } catch {
+        /* non-critical */
+      }
+    }
+
     return {
       time: anchor,
       projectPath: this.projectPath,
@@ -504,6 +531,10 @@ export class ContextEngine {
       this.cleanupIntervalId = null;
     }
     this.l1.stopCleanupInterval();
+
+    // Close code index
+    this.codeIndex?.close();
+    this.codeIndex = null;
 
     // Close layers
     this.l1.clear();

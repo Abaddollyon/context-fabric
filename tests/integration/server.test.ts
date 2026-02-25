@@ -661,6 +661,170 @@ describe('MCP Server Integration', () => {
   });
   
   // ============================================================================
+  // Tool: context.searchCode
+  // ============================================================================
+
+  describe('context.searchCode', () => {
+    beforeEach(async () => {
+      const { writeFileSync, mkdirSync } = await import('fs');
+      const { join } = await import('path');
+      mkdirSync(join(context.projectPath, 'src'), { recursive: true });
+
+      writeFileSync(join(context.projectPath, 'src/auth.ts'), `
+export class AuthService {
+  private secret: string;
+
+  constructor(secret: string) {
+    this.secret = secret;
+  }
+
+  verifyToken(token: string): boolean {
+    return token.startsWith('valid_');
+  }
+}
+
+export interface AuthConfig {
+  secret: string;
+  expiresIn: number;
+}
+`);
+
+      writeFileSync(join(context.projectPath, 'src/user.ts'), `
+export interface User {
+  id: string;
+  name: string;
+}
+
+export function createUser(name: string): User {
+  return { id: crypto.randomUUID(), name };
+}
+`);
+
+      // Index the files
+      const idx = engine.getCodeIndex();
+      await idx.reindexFile('src/auth.ts');
+      await idx.reindexFile('src/user.ts');
+    });
+
+    async function handleSearchCode(args: {
+      query: string;
+      mode?: 'text' | 'symbol' | 'semantic';
+      language?: string;
+      filePattern?: string;
+      symbolKind?: string;
+      limit?: number;
+      threshold?: number;
+      includeContent?: boolean;
+    }) {
+      const idx = engine.getCodeIndex();
+      await idx.ensureReady();
+
+      const searchOpts = {
+        language: args.language,
+        filePattern: args.filePattern,
+        symbolKind: args.symbolKind,
+        limit: args.limit || 10,
+        threshold: args.threshold || 0.5,
+        includeContent: args.includeContent ?? true,
+      };
+
+      let results;
+      switch (args.mode || 'text') {
+        case 'text':
+          results = idx.searchText(args.query, searchOpts);
+          break;
+        case 'symbol':
+          results = idx.searchSymbols(args.query, searchOpts);
+          break;
+        case 'semantic':
+        default:
+          results = await idx.searchSemantic(args.query, searchOpts);
+          break;
+      }
+
+      const status = idx.getStatus();
+      return {
+        results,
+        indexStatus: {
+          totalFiles: status.totalFiles,
+          totalSymbols: status.totalSymbols,
+          lastIndexed: status.lastIndexedAt,
+          isStale: status.isStale,
+        },
+        total: results.length,
+      };
+    }
+
+    it('should search code by text', async () => {
+      const result = await handleSearchCode({
+        query: 'verifyToken',
+        mode: 'text',
+      });
+
+      expect(result.total).toBeGreaterThan(0);
+      expect(result.results[0].filePath).toContain('auth.ts');
+      expect(result.indexStatus.totalFiles).toBe(2);
+    });
+
+    it('should search code by symbol name', async () => {
+      const result = await handleSearchCode({
+        query: 'AuthService',
+        mode: 'symbol',
+      });
+
+      expect(result.total).toBeGreaterThan(0);
+      expect(result.results[0].symbol?.name).toBe('AuthService');
+      expect(result.results[0].symbol?.kind).toBe('class');
+    });
+
+    it('should filter symbols by kind', async () => {
+      const result = await handleSearchCode({
+        query: '',
+        mode: 'symbol',
+        symbolKind: 'interface',
+      });
+
+      expect(result.total).toBeGreaterThan(0);
+      result.results.forEach((r: any) => {
+        expect(r.symbol?.kind).toBe('interface');
+      });
+    });
+
+    it('should filter by language', async () => {
+      const result = await handleSearchCode({
+        query: 'function',
+        mode: 'text',
+        language: 'typescript',
+      });
+
+      expect(result.total).toBeGreaterThan(0);
+    });
+
+    it('should return index status', async () => {
+      const result = await handleSearchCode({
+        query: 'User',
+        mode: 'text',
+      });
+
+      expect(result.indexStatus).toBeDefined();
+      expect(result.indexStatus.totalFiles).toBe(2);
+      expect(result.indexStatus.totalSymbols).toBeGreaterThan(0);
+    });
+
+    it('should handle semantic search mode gracefully', async () => {
+      const result = await handleSearchCode({
+        query: 'authentication',
+        mode: 'semantic',
+      });
+
+      // Results depend on whether embedding model is available
+      expect(result.results).toBeDefined();
+      expect(Array.isArray(result.results)).toBe(true);
+      expect(result.indexStatus).toBeDefined();
+    });
+  });
+
+  // ============================================================================
   // Error Handling
   // ============================================================================
   

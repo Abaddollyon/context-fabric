@@ -274,6 +274,11 @@ export class SemanticMemoryLayer {
     return row?.count ?? 0;
   }
 
+  /** Expose the shared EmbeddingService so the code index can reuse it. */
+  getEmbeddingService(): EmbeddingService {
+    return this.embedder;
+  }
+
   close(): void {
     try { this.db.close(); } catch { /* ignore */ }
   }

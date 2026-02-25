@@ -1,6 +1,6 @@
 # Tools Reference
 
-All 11 MCP tools with full parameter docs and example payloads. Your AI calls these automatically -- you rarely need to invoke them by hand.
+All 12 MCP tools with full parameter docs and example payloads. Your AI calls these automatically -- you rarely need to invoke them by hand.
 
 ## Table of Contents
 
@@ -11,6 +11,8 @@ All 11 MCP tools with full parameter docs and example payloads. Your AI calls th
 - [Time Tools](#time-tools)
   - [context.time](#contexttime)
   - [context.orient](#contextorient)
+- [Code Tools](#code-tools)
+  - [context.searchCode](#contextsearchcode)
 - [Management Tools](#management-tools)
   - [context.summarize](#contextsummarize)
   - [context.promote](#contextpromote)
@@ -362,6 +364,88 @@ The orientation loop: "Where am I in time? What happened while I was offline? Wh
   ]
 }
 ```
+
+---
+
+## Code Tools
+
+### context.searchCode
+
+Search the project's source code index. Supports three modes: full-text search, symbol search (functions/classes/types by name), and semantic search (natural-language similarity using embeddings). The index is built automatically on first use and stays up-to-date via file watching.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | Search query (min 1 character) |
+| `mode` | string | No | Search mode: `text`, `symbol`, or `semantic` (default: `semantic`) |
+| `language` | string | No | Filter results to a specific language (e.g. `typescript`, `python`) |
+| `filePattern` | string | No | Glob pattern to filter files (e.g. `src/**/*.ts`) |
+| `symbolKind` | string | No | Filter symbols by kind: `function`, `class`, `interface`, `type`, `enum`, `const`, `export`, `method` |
+| `limit` | number | No | Maximum results to return (default: `10`) |
+| `threshold` | number | No | Minimum similarity score for semantic search, 0-1 (default: `0.5`) |
+| `includeContent` | boolean | No | Include source content in results (default: `true`) |
+| `projectPath` | string | No | Project path. Defaults to current working directory |
+
+#### Example Request (Symbol Search)
+
+```json
+{
+  "query": "AuthService",
+  "mode": "symbol",
+  "symbolKind": "class",
+  "limit": 5
+}
+```
+
+#### Example Response
+
+```json
+{
+  "results": [
+    {
+      "filePath": "src/services/auth.ts",
+      "language": "typescript",
+      "symbol": {
+        "name": "AuthService",
+        "kind": "class",
+        "signature": "export class AuthService {",
+        "lineStart": 5,
+        "lineEnd": 25,
+        "docComment": "Handles authentication and token management."
+      }
+    }
+  ],
+  "indexStatus": {
+    "totalFiles": 42,
+    "totalSymbols": 187,
+    "lastIndexed": "2026-02-25T09:15:00.000Z",
+    "isStale": false
+  },
+  "total": 1
+}
+```
+
+#### Example Request (Text Search)
+
+```json
+{
+  "query": "verifyToken",
+  "mode": "text",
+  "filePattern": "src/**/*.ts"
+}
+```
+
+#### Supported Languages
+
+**Tier 1** (full extraction: functions, classes, interfaces, types, enums, constants, methods, doc comments):
+- TypeScript / JavaScript
+- Python
+- Rust
+- Go
+
+**Tier 2** (functions and classes):
+- Java, C#, Ruby, C/C++
 
 ---
 
