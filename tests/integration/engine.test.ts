@@ -1234,6 +1234,119 @@ export function handleRequest(req: Request): Response {
   });
 
   // ============================================================================
+  // Pinned Memories (v0.5.5)
+  // ============================================================================
+
+  describe('pinned memories', () => {
+    it('should store a pinned L2 memory and return pinned=true', async () => {
+      const mem = await engine.store('pinned-l2-test', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+        pinned: true,
+      });
+      expect(mem.pinned).toBe(true);
+
+      const found = await engine.getMemory(mem.id);
+      expect(found?.memory.pinned).toBe(true);
+    });
+
+    it('should store an unpinned L2 memory and return pinned=false', async () => {
+      const mem = await engine.store('unpinned-l2-test', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+      });
+      expect(mem.pinned).toBe(false);
+    });
+
+    it('should pin and unpin an L2 memory via updateMemory', async () => {
+      const mem = await engine.store('pin-toggle-l2-test', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+      });
+      expect(mem.pinned).toBe(false);
+
+      const pinned = await engine.updateMemory(mem.id, { pinned: true });
+      expect(pinned.memory.pinned).toBe(true);
+
+      const unpinned = await engine.updateMemory(mem.id, { pinned: false });
+      expect(unpinned.memory.pinned).toBe(false);
+    });
+
+    it('should not archive pinned L2 memories during summarize', async () => {
+      const pinned = await engine.store('pinned-summarize-safe', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+        pinned: true,
+      });
+
+      // Make it appear old so summarize would normally archive it
+      const veryOldTs = Date.now() - 365 * 24 * 60 * 60 * 1000;
+      (engine.l2 as any).db.prepare('UPDATE memories SET created_at = ? WHERE id = ?')
+        .run(veryOldTs, pinned.id);
+
+      await engine.summarize(MemoryLayer.L2_PROJECT, 1);
+
+      const stillExists = await engine.getMemory(pinned.id);
+      expect(stillExists).not.toBeNull();
+    });
+
+    it.skipIf(!hasEmbeddingModel)('should store a pinned L3 memory and return pinned=true', async () => {
+      const mem = await engine.store('pinned-l3-test', 'decision', {
+        layer: MemoryLayer.L3_SEMANTIC,
+        pinned: true,
+      });
+      expect(mem.pinned).toBe(true);
+
+      const found = await engine.l3.get(mem.id);
+      expect(found?.pinned).toBe(true);
+    });
+
+    it.skipIf(!hasEmbeddingModel)('pinned L3 memories survive applyDecay', async () => {
+      const mem = await engine.store('pinned-decay-safe', 'decision', {
+        layer: MemoryLayer.L3_SEMANTIC,
+        pinned: true,
+      });
+
+      // Age the memory so it would normally be pruned
+      const veryOldTs = Date.now() - 180 * 24 * 60 * 60 * 1000;
+      const l3 = engine.l3 as any;
+      l3.db.prepare('UPDATE semantic_memories SET created_at = ?, accessed_at = ? WHERE id = ?')
+        .run(veryOldTs, veryOldTs, mem.id);
+
+      await engine.l3.applyDecay();
+
+      const found = await engine.l3.get(mem.id);
+      expect(found).toBeDefined();
+      expect(found?.pinned).toBe(true);
+    });
+
+    it.skipIf(!hasEmbeddingModel)('unpinned aged L3 memories are still pruned by applyDecay', async () => {
+      const mem = await engine.store('unpinned-decay-pruned', 'scratchpad', {
+        layer: MemoryLayer.L3_SEMANTIC,
+      });
+
+      const veryOldTs = Date.now() - 180 * 24 * 60 * 60 * 1000;
+      const l3 = engine.l3 as any;
+      l3.db.prepare('UPDATE semantic_memories SET created_at = ?, accessed_at = ? WHERE id = ?')
+        .run(veryOldTs, veryOldTs, mem.id);
+
+      await engine.l3.applyDecay();
+
+      const found = await engine.l3.get(mem.id);
+      expect(found).toBeUndefined();
+    });
+
+    it.skipIf(!hasEmbeddingModel)('should pin and unpin an L3 memory via updateMemory', async () => {
+      const mem = await engine.store('pin-toggle-l3-test', 'decision', {
+        layer: MemoryLayer.L3_SEMANTIC,
+      });
+      expect(mem.pinned).toBe(false);
+
+      const pinned = await engine.updateMemory(mem.id, { pinned: true });
+      expect(pinned.memory.pinned).toBe(true);
+
+      const unpinned = await engine.updateMemory(mem.id, { pinned: false });
+      expect(unpinned.memory.pinned).toBe(false);
+    });
+  });
+
+  // ============================================================================
   // Cleanup (requires L3 for seedTestMemories)
   // ============================================================================
 

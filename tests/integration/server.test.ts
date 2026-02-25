@@ -47,18 +47,21 @@ describe('MCP Server Integration', () => {
     content: string;
     metadata: Record<string, unknown>;
     ttl?: number;
+    pinned?: boolean;
   }) {
     const memory = await engine.store(args.content, args.type, {
       layer: args.layer as MemoryLayer,
       metadata: args.metadata,
       tags: (args.metadata.tags as string[]) || [],
       ttl: args.ttl,
+      pinned: args.pinned,
     });
-    
+
     return {
       id: memory.id,
       success: true,
       layer: memory.layer,
+      pinned: memory.pinned ?? false,
     };
   }
   
@@ -194,19 +197,21 @@ describe('MCP Server Integration', () => {
         createdAt: result.memory.createdAt,
         updatedAt: result.memory.updatedAt,
         accessCount: result.memory.accessCount,
+        pinned: result.memory.pinned ?? false,
       },
       layer: result.layer,
     };
   }
 
-  async function handleUpdateMemory(args: { memoryId: string; content?: string; metadata?: Record<string, unknown>; tags?: string[]; weight?: number; projectPath?: string }) {
-    const updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[] } = {};
+  async function handleUpdateMemory(args: { memoryId: string; content?: string; metadata?: Record<string, unknown>; tags?: string[]; weight?: number; pinned?: boolean; projectPath?: string }) {
+    const updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[]; pinned?: boolean } = {};
     if (args.content !== undefined) updates.content = args.content;
     if (args.metadata !== undefined) updates.metadata = args.metadata;
     if (args.tags !== undefined) updates.tags = args.tags;
     if (args.weight !== undefined) {
       updates.metadata = { ...updates.metadata, weight: args.weight };
     }
+    if (args.pinned !== undefined) updates.pinned = args.pinned;
     const result = await engine.updateMemory(args.memoryId, updates);
     return {
       memory: {
@@ -217,6 +222,7 @@ describe('MCP Server Integration', () => {
         tags: result.memory.tags,
         createdAt: result.memory.createdAt,
         updatedAt: result.memory.updatedAt,
+        pinned: result.memory.pinned ?? false,
       },
       layer: result.layer,
       success: true,
@@ -1292,6 +1298,66 @@ export function createUser(name: string): User {
       
       expect(results.every(r => r.processed)).toBe(true);
       expect(results.every(r => r.memoryId)).toBe(true);
+    });
+  });
+
+  // ============================================================================
+  // Pinned memories (v0.5.5)
+  // ============================================================================
+
+  describe('context.store with pinned', () => {
+    it('should store a pinned memory and return pinned=true', async () => {
+      const stored = await handleStore({
+        type: 'decision',
+        layer: MemoryLayer.L2_PROJECT,
+        content: 'server-pinned-store-test',
+        metadata: { cliType: 'kimi' },
+        pinned: true,
+      });
+      expect(stored.pinned).toBe(true);
+
+      const fetched = await handleGetMemory({ memoryId: stored.id });
+      expect(fetched.memory.pinned).toBe(true);
+    });
+
+    it('should store an unpinned memory and return pinned=false', async () => {
+      const stored = await handleStore({
+        type: 'decision',
+        layer: MemoryLayer.L2_PROJECT,
+        content: 'server-unpinned-store-test',
+        metadata: { cliType: 'kimi' },
+      });
+      expect(stored.pinned).toBe(false);
+    });
+  });
+
+  describe('context.update with pinned', () => {
+    it('should pin a memory via top-level pinned param', async () => {
+      const stored = await handleStore({
+        type: 'decision',
+        layer: MemoryLayer.L2_PROJECT,
+        content: 'server-pin-update-test',
+        metadata: { cliType: 'kimi' },
+      });
+
+      const updated = await handleUpdateMemory({ memoryId: stored.id, pinned: true });
+      expect(updated.memory.pinned).toBe(true);
+
+      const fetched = await handleGetMemory({ memoryId: stored.id });
+      expect(fetched.memory.pinned).toBe(true);
+    });
+
+    it('should unpin a memory via top-level pinned param', async () => {
+      const stored = await handleStore({
+        type: 'decision',
+        layer: MemoryLayer.L2_PROJECT,
+        content: 'server-unpin-update-test',
+        metadata: { cliType: 'kimi' },
+        pinned: true,
+      });
+
+      const updated = await handleUpdateMemory({ memoryId: stored.id, pinned: false });
+      expect(updated.memory.pinned).toBe(false);
     });
   });
 });

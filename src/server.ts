@@ -53,6 +53,8 @@ const StoreMemorySchema = z.object({
     weight: z.number().int().min(1).max(5).default(3)
       .describe('Priority 1–5 (default 3). 4–5 surfaces above unweighted memories in recall and context window.'),
   }),
+  pinned: z.boolean().optional()
+    .describe('Pin this memory to protect it from decay and summarization. Pinned memories are never automatically deleted.'),
   ttl: z.number().int().positive().optional(),
 });
 
@@ -170,6 +172,8 @@ const UpdateMemorySchema = z.object({
   tags: z.array(z.string()).optional(),
   weight: z.number().int().min(1).max(5).optional()
     .describe('Update the memory weight (1–5)'),
+  pinned: z.boolean().optional()
+    .describe('Pin (true) or unpin (false) this memory. Pinned memories are exempt from decay and summarization.'),
   projectPath: z.string().optional(),
 });
 
@@ -251,6 +255,7 @@ const TOOLS: Tool[] = [
             weight: { type: "number", description: "Priority 1–5 (default 3). 4–5 surfaces above unweighted memories in recall and context window." },
           },
         },
+        pinned: { type: "boolean", description: "Pin this memory to protect it from decay and summarization." },
         ttl: { type: "number", description: "Time-to-live in seconds (for L1 memories)" },
       },
       required: ["type", "content", "metadata"],
@@ -457,6 +462,7 @@ const TOOLS: Tool[] = [
         metadata: { type: "object", description: "Metadata fields to merge (optional)" },
         tags: { type: "array", items: { type: "string" }, description: "New tags array (replaces existing tags)" },
         weight: { type: "number", description: "Update the memory weight (1–5)" },
+        pinned: { type: "boolean", description: "Pin (true) or unpin (false) this memory. Pinned memories are exempt from decay and summarization." },
         projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
       },
       required: ["memoryId"],
@@ -587,12 +593,14 @@ async function handleStore(args: unknown): Promise<unknown> {
     metadata: params.metadata,
     tags: params.metadata.tags,
     ttl: params.ttl,
+    pinned: params.pinned,
   });
   
-  return { 
-    id: memory.id, 
+  return {
+    id: memory.id,
     success: true,
     layer: memory.layer,
+    pinned: memory.pinned ?? false,
   };
 }
 
@@ -842,13 +850,14 @@ async function handleUpdateMemory(args: unknown): Promise<unknown> {
   const params = UpdateMemorySchema.parse(args);
   const engine = getEngine(params.projectPath);
 
-  const updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[] } = {};
+  const updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[]; pinned?: boolean } = {};
   if (params.content !== undefined) updates.content = params.content;
   if (params.metadata !== undefined) updates.metadata = params.metadata;
   if (params.tags !== undefined) updates.tags = params.tags;
   if (params.weight !== undefined) {
     updates.metadata = { ...updates.metadata, weight: params.weight };
   }
+  if (params.pinned !== undefined) updates.pinned = params.pinned;
 
   const result = await engine.updateMemory(params.memoryId, updates);
 
@@ -861,6 +870,7 @@ async function handleUpdateMemory(args: unknown): Promise<unknown> {
       tags: result.memory.tags,
       createdAt: result.memory.createdAt,
       updatedAt: result.memory.updatedAt,
+      pinned: result.memory.pinned ?? false,
     },
     layer: result.layer,
     success: true,

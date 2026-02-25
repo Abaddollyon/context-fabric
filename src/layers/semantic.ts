@@ -63,6 +63,7 @@ export class SemanticMemoryLayer {
   private stmtUpdateFull!: StatementSync;
   private stmtFindByType!: StatementSync;
   private stmtCountByType!: StatementSync;
+  private stmtSetPinned!: StatementSync;
 
   constructor(options: SemanticMemoryOptions = {}) {
     this.decayDays = options.decayDays ?? 14;
@@ -101,13 +102,21 @@ export class SemanticMemoryLayer {
     `);
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_sem_type ON semantic_memories(type)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_sem_relevance ON semantic_memories(relevance_score)');
+
+    // Migration: add pinned column if not present (v0.5.5)
+    const cols = (this.db.prepare('PRAGMA table_info(semantic_memories)').all() as Array<{ name: string }>)
+      .map(r => r.name);
+    if (!cols.includes('pinned')) {
+      this.db.exec('ALTER TABLE semantic_memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_sem_pinned ON semantic_memories(pinned)');
   }
 
   private prepareStatements(): void {
     this.stmtInsert = this.db.prepare(`
       INSERT INTO semantic_memories
-        (id, type, content, metadata, tags, embedding, created_at, updated_at, accessed_at, access_count, relevance_score)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1.0)
+        (id, type, content, metadata, tags, embedding, created_at, updated_at, accessed_at, access_count, relevance_score, pinned)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1.0, ?)
     `);
 
     this.stmtGetById = this.db.prepare('SELECT * FROM semantic_memories WHERE id = ?');
@@ -143,13 +152,16 @@ export class SemanticMemoryLayer {
     this.stmtCountByType = this.db.prepare(
       'SELECT COUNT(*) as count FROM semantic_memories WHERE type = ?'
     );
+
+    this.stmtSetPinned = this.db.prepare('UPDATE semantic_memories SET pinned = ? WHERE id = ?');
   }
 
   /** Store a memory along with its computed embedding vector. */
   async store(
     content: string,
     type: MemoryType,
-    metadata: Record<string, unknown> = {}
+    metadata: Record<string, unknown> = {},
+    pinned = false
   ): Promise<Memory> {
     const now = Date.now();
     const id = uuidv4();
@@ -171,6 +183,7 @@ export class SemanticMemoryLayer {
       updatedAt: now,
       accessCount: 0,
       lastAccessedAt: now,
+      pinned,
     };
 
     const embedding = await this.embedder.embed(content);
@@ -185,6 +198,7 @@ export class SemanticMemoryLayer {
       now,
       now,
       now,
+      pinned ? 1 : 0,
     );
 
     return memory;
@@ -266,6 +280,8 @@ export class SemanticMemoryLayer {
     let affectedCount = 0;
 
     for (const row of rows) {
+      if (row.pinned === 1) continue; // pinned memories are exempt from decay
+
       const age = now - row.created_at;
       const timeSinceAccess = now - row.accessed_at;
 
@@ -294,7 +310,7 @@ export class SemanticMemoryLayer {
   }
 
   /** Update a memory. Re-embeds only if content changed. */
-  async update(id: string, updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[] }): Promise<Memory> {
+  async update(id: string, updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[]; pinned?: boolean }): Promise<Memory> {
     const row = this.stmtGetById.get(id) as DbRow | undefined;
     if (!row) throw new Error(`Memory not found: ${id}`);
 
@@ -332,6 +348,13 @@ export class SemanticMemoryLayer {
       id,
     );
 
+    // Update pin status if provided
+    if (updates.pinned !== undefined) {
+      this.stmtSetPinned.run(updates.pinned ? 1 : 0, id);
+    }
+
+    const newPinned = updates.pinned !== undefined ? updates.pinned : row.pinned === 1;
+
     return {
       id: row.id,
       type: row.type as MemoryType,
@@ -342,6 +365,7 @@ export class SemanticMemoryLayer {
       updatedAt: now,
       accessCount: row.access_count,
       lastAccessedAt: row.accessed_at,
+      pinned: newPinned,
     };
   }
 
@@ -448,6 +472,7 @@ export class SemanticMemoryLayer {
       updatedAt: row.updated_at,
       accessCount: row.access_count,
       lastAccessedAt: row.accessed_at,
+      pinned: row.pinned === 1,
     };
   }
 
@@ -468,6 +493,7 @@ interface DbRow {
   accessed_at: number;
   access_count: number;
   relevance_score: number;
+  pinned: number; // 0 = normal, 1 = pinned (exempt from decay)
 }
 
 export default SemanticMemoryLayer;

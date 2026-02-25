@@ -36,6 +36,7 @@ export interface StoreOptions {
   metadata?: Record<string, unknown>;
   tags?: string[];
   ttl?: number;
+  pinned?: boolean; // if true, memory is exempt from decay and summarization (v0.5.5)
 }
 
 export interface RecallOptions {
@@ -209,11 +210,11 @@ export class ContextEngine {
         break;
 
       case MemoryLayer.L2_PROJECT:
-        memory = await this.l2.store(content, type, metadata, options.tags);
+        memory = await this.l2.store(content, type, metadata, options.tags, options.pinned);
         break;
 
       case MemoryLayer.L3_SEMANTIC:
-        memory = await this.l3.store(content, type, metadata);
+        memory = await this.l3.store(content, type, metadata, options.pinned);
         break;
 
       default:
@@ -577,7 +578,7 @@ export class ContextEngine {
    * Update a memory by ID. L1 updates are rejected (ephemeral — store a new one instead).
    * L3 re-embeds only if content changed.
    */
-  async updateMemory(id: string, updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[] }): Promise<{ memory: Memory; layer: MemoryLayer }> {
+  async updateMemory(id: string, updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[]; pinned?: boolean }): Promise<{ memory: Memory; layer: MemoryLayer }> {
     const found = await this.getMemory(id);
     if (!found) throw new Error(`Memory not found: ${id}`);
 
@@ -592,6 +593,7 @@ export class ContextEngine {
       if (updates.metadata !== undefined) {
         partial.metadata = { ...found.memory.metadata, ...updates.metadata } as MemoryMetadata;
       }
+      if (updates.pinned !== undefined) partial.pinned = updates.pinned;
       const updated = await this.l2.update(id, partial);
       return { memory: updated, layer: MemoryLayer.L2_PROJECT };
     }

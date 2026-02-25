@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned
 
+## [0.5.5] - 2026-02-25
+
+### Added
+- **Pinned memories** — new `pinned` boolean field (default `false`) on L2 and L3 memories:
+  - `context.store` — accepts top-level `pinned: true` to pin at creation time
+  - `context.update` — accepts top-level `pinned` param to pin or unpin an existing memory
+  - `context.get` / `context.list` — return `pinned` field in all results
+- **Decay exemption** — `applyDecay()` skips rows with `pinned = 1`; pinned L3 memories are never automatically deleted
+- **Summarize exemption** — L2 `summarize()` skips pinned memories; they are never archived into summary entries
+
+### Technical
+- `pinned INTEGER NOT NULL DEFAULT 0` SQL column added to both `memories` (L2) and `semantic_memories` (L3) tables
+- Online migration: column added via `PRAGMA table_info` + `ALTER TABLE ADD COLUMN` — existing databases upgrade transparently on first connection
+- `pinned` is a first-class SQL column (not stored in the metadata JSON blob) — enables efficient WHERE filtering without JSON parsing
+- `Memory` interface gains top-level `pinned?: boolean` field
+
+### Design Decisions
+- `pinned` is top-level on `Memory` (not in `metadata`) because it's a storage-layer concern, not user metadata
+- Migration is applied unconditionally at startup (idempotent index creation with `IF NOT EXISTS`), so cold-restart upgrades work without manual intervention
+- `weight: 5` remains the soft alternative to pinning; `pinned: true` is the hard guarantee
+
 ## [0.5.4] - 2026-02-25
 
 ### Changed

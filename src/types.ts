@@ -95,6 +95,8 @@ export interface Memory {
   ttl?: number; // seconds, for L1
   // Legacy fields for L2 storage
   relevanceScore?: number;
+  // SQL-filterable pin flag — exempt from decay and summarization (v0.5.5)
+  pinned?: boolean;
 }
 
 // Legacy MemoryEntry for L1 Working Memory
