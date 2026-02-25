@@ -456,7 +456,7 @@ describe('End-to-End: CLI Session Flow', () => {
   
   describe('Cross-Layer Memory Recall', () => {
     it('should recall across all layers', async () => {
-      const results = await engine.recall('error handling', { limit: 20 });
+      const results = await engine.recall('TypeError', { limit: 20 });
       
       expect(results.length).toBeGreaterThan(0);
       
