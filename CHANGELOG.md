@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned
 
+## [0.5.4] - 2026-02-25
+
+### Changed
+- **Aggressive L3 decay** — default `l3DecayDays` reduced from 30 → **14 days**; unaccessed L3 memories age out roughly twice as fast
+- **Configurable decay threshold** — deletion threshold raised from hardcoded `0.1` → configurable `l3DecayThreshold` (default **0.2**); memories need a higher relevance score to survive, keeping the store leaner
+- **Decay on session start** — `context.orient` now fires `l3.applyDecay()` in the background on every call, ensuring pruning happens at session start even after a cold restart (previously only the hourly background timer triggered decay)
+
+### Design Decisions
+- Decay threshold is now a first-class config field (`ttl.l3DecayThreshold`) — override in `~/.context-fabric/config.yaml` to tune aggressiveness
+- `orient()` decay is fire-and-forget — never blocks the context window response
+- Pinned memories (0.5.5) will be exempt from decay; for now, `weight: 5` slows decay naturally via the access-boost mechanism
+
 ## [0.5.3] - 2026-02-25
 
 ### Added

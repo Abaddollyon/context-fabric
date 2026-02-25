@@ -131,6 +131,7 @@ export class ContextEngine {
     this.l3 = new SemanticMemoryLayer({
       baseDir: storagePaths.l3Path,
       decayDays: this.config.ttl.l3DecayDays,
+      decayThreshold: this.config.ttl.l3DecayThreshold,
       collectionName: 'semantic_memories',
       isEphemeral: options.isEphemeral,
     });
@@ -519,6 +520,13 @@ export class ContextEngine {
     } else {
       lines.push('First session in this project.');
     }
+
+    // Fire-and-forget L3 decay on session start (aggressive 14-day window)
+    this.l3.applyDecay().then((pruned) => {
+      if (pruned > 0) this.log('debug', `orient: pruned ${pruned} stale L3 memories`);
+    }).catch((err) => {
+      this.log('warn', 'orient: L3 decay failed:', err);
+    });
 
     // Fire-and-forget code index update
     if (this.config.codeIndex.enabled) {

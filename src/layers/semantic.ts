@@ -21,6 +21,7 @@ export interface ScoredMemory extends Memory {
 interface SemanticMemoryOptions {
   baseDir?: string;
   decayDays?: number;
+  decayThreshold?: number; // relevance score below which a memory is deleted (default: 0.2)
   collectionName?: string; // kept for API compat, unused
   isEphemeral?: boolean;   // if true, use in-memory SQLite
 }
@@ -46,6 +47,7 @@ export class SemanticMemoryLayer {
   private db: DatabaseSync;
   private embedder: EmbeddingService;
   private decayDays: number;
+  private decayThreshold: number;
 
   // Prepared statements
   private stmtInsert!: StatementSync;
@@ -63,7 +65,8 @@ export class SemanticMemoryLayer {
   private stmtCountByType!: StatementSync;
 
   constructor(options: SemanticMemoryOptions = {}) {
-    this.decayDays = options.decayDays ?? 30;
+    this.decayDays = options.decayDays ?? 14;
+    this.decayThreshold = options.decayThreshold ?? 0.2;
 
     if (options.isEphemeral) {
       this.db = new DatabaseSync(':memory:');
@@ -250,9 +253,9 @@ export class SemanticMemoryLayer {
   }
 
   /**
-   * Apply time-based decay to all memories. Memories below a relevance
-   * threshold of 0.1 are permanently deleted. Returns the number of
-   * memories evaluated.
+   * Apply time-based decay to all memories. Memories whose relevance score
+   * drops below decayThreshold (default 0.2) are permanently deleted.
+   * Returns the number of memories evaluated.
    */
   async applyDecay(): Promise<number> {
     const rows = this.stmtGetAll.all() as unknown as DbRow[];
@@ -271,7 +274,7 @@ export class SemanticMemoryLayer {
       const inactivityPenalty = Math.exp(-timeSinceAccess / decayMs);
       const newScore = Math.max(0, (ageDecay * 0.3 + inactivityPenalty * 0.7) + accessBoost);
 
-      if (newScore < 0.1) {
+      if (newScore < this.decayThreshold) {
         this.stmtDelete.run(row.id);
       } else if (Math.abs(newScore - row.relevance_score) > 0.01) {
         this.stmtUpdateScore.run(newScore, now, row.id);
