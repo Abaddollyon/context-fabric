@@ -35,6 +35,7 @@ describe('End-to-End: CLI Session Flow', () => {
       projectPath,
       autoCleanup: false,
       logLevel: 'error',
+      isEphemeral: true,
     });
     
     sessionId = generateSessionId();
@@ -289,7 +290,7 @@ describe('End-to-End: CLI Session Flow', () => {
     });
     
     it('should store pattern in L3 (Semantic Memory)', async () => {
-      // Give ChromaDB time to index
+      // Give L3 time to index
       await sleep(200);
       
       const results = await engine.l3.recall('defensive prop destructuring', 5);
@@ -575,6 +576,78 @@ export class UserService {
       expect(status.totalFiles).toBe(2);
       expect(status.totalSymbols).toBeGreaterThan(0);
       expect(status.totalChunks).toBeGreaterThan(0);
+    });
+  });
+
+  // ============================================================================
+  // Step 9: Memory CRUD
+  // ============================================================================
+
+  describe('Step 9: Memory CRUD', () => {
+    it('should get→update→verify a memory', async () => {
+      // Store
+      const mem = await engine.store('CRUD test decision', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+        tags: ['crud-test'],
+      });
+
+      // Get
+      const found = await engine.getMemory(mem.id);
+      expect(found).not.toBeNull();
+      expect(found!.memory.content).toBe('CRUD test decision');
+      expect(found!.layer).toBe(MemoryLayer.L2_PROJECT);
+
+      // Update
+      const updated = await engine.updateMemory(mem.id, {
+        content: 'CRUD test decision (updated)',
+        tags: ['crud-test', 'updated'],
+      });
+      expect(updated.memory.content).toBe('CRUD test decision (updated)');
+      expect(updated.memory.tags).toEqual(['crud-test', 'updated']);
+
+      // Verify update persisted
+      const verified = await engine.getMemory(mem.id);
+      expect(verified!.memory.content).toBe('CRUD test decision (updated)');
+    });
+
+    it('should delete a memory and verify it is gone', async () => {
+      const mem = await engine.store('To be deleted', 'bug_fix', {
+        layer: MemoryLayer.L2_PROJECT,
+      });
+
+      const result = await engine.deleteMemory(mem.id);
+      expect(result.deletedFrom).toBe(MemoryLayer.L2_PROJECT);
+
+      const gone = await engine.getMemory(mem.id);
+      expect(gone).toBeNull();
+    });
+
+    it('should list memories with pagination', async () => {
+      // Use a unique tag to isolate from other tests
+      const tag = `list-test-${Date.now()}`;
+      for (let i = 0; i < 4; i++) {
+        await engine.store(`List item ${i}`, 'decision', {
+          layer: MemoryLayer.L2_PROJECT,
+          tags: [tag],
+        });
+      }
+
+      const page = await engine.listMemories({ tags: [tag], limit: 2, offset: 0 });
+      expect(page.memories).toHaveLength(2);
+      expect(page.total).toBe(4);
+
+      const page2 = await engine.listMemories({ tags: [tag], limit: 2, offset: 2 });
+      expect(page2.memories).toHaveLength(2);
+    });
+
+    it('should reject updating L1 ephemeral memories', async () => {
+      const mem = await engine.store('Ephemeral note', 'scratchpad', {
+        layer: MemoryLayer.L1_WORKING,
+      });
+
+      await expect(
+        engine.updateMemory(mem.id, { content: 'Updated' })
+      ).rejects.toThrow('Cannot update L1');
     });
   });
 

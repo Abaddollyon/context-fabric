@@ -5,8 +5,8 @@
  * and writes it back. Safe to call multiple times (idempotent).
  *
  * Two transport modes:
- *   Local  — spawns `bun dist/server.js` directly (requires bun installed)
- *   Docker — spawns `docker run --rm -i ...` (cross-platform, no bun needed on host)
+ *   Local  — spawns `node dist/server.js` directly (requires Node.js 22.5+)
+ *   Docker — spawns `docker run --rm -i ...` (cross-platform, no Node.js needed on host)
  */
 
 import fs from 'fs';
@@ -57,7 +57,7 @@ const DOCKER_VOLUME = 'context-fabric-data';
 const DOCKER_DATA_PATH = '/data/.context-fabric';
 
 // ============================================================================
-// Config Entry Generators — Local (bun)
+// Config Entry Generators — Local (node)
 // ============================================================================
 
 /** OpenCode: { type, command, enabled } */
@@ -222,7 +222,7 @@ function setupClaudeCode(serverPath: string, docker: boolean): SetupResult {
 
   const modeNote = docker
     ? 'Uses Docker (cross-platform). Ensure the image is built: docker build -t context-fabric .'
-    : 'Uses local bun installation.';
+    : 'Uses local Node.js installation.';
 
   return {
     success: true, cli: 'claude-code', configPath, restartRequired: true,

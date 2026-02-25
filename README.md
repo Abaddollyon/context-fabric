@@ -4,7 +4,7 @@
 
 **Persistent memory for AI coding agents.** Your agent remembers everything -- across sessions, projects, and tools.
 
-[![Version](https://img.shields.io/badge/version-0.4.5--beta-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
+[![Version](https://img.shields.io/badge/version-0.5.2--beta-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Node](https://img.shields.io/badge/node-22.5%2B-brightgreen?style=flat-square)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](Dockerfile)
@@ -35,7 +35,7 @@ Context Fabric is an [MCP](https://modelcontextprotocol.io/) server that gives y
 - **Pattern detection** -- Auto-captures and reuses code patterns across projects.
 - **Self-installing** -- Ask your AI to run `context.setup` and it configures itself into any supported CLI.
 - **Docker-first** -- Cross-platform `docker run --rm -i`. No Node.js required on the host.
-- **12 MCP tools** -- Store, recall, orient, time, summarize, promote, ghost, patterns, events, searchCode, setup.
+- **16 MCP tools** -- Store, recall, orient, time, summarize, promote, ghost, patterns, events, searchCode, setup.
 - **Zero external dependencies** -- All storage is SQLite. All search is local. Nothing leaves your machine.
 
 ## Supported CLIs
@@ -139,7 +139,7 @@ Memories auto-route to the right layer. Scratchpad notes go to L1 (ephemeral). D
 |----------|-------------|
 | [Getting Started](docs/getting-started.md) | Installation, first run, Docker and local setup |
 | [CLI Setup](docs/cli-setup.md) | Per-CLI configuration (all 7 supported CLIs) |
-| [Tools Reference](docs/tools-reference.md) | All 12 MCP tools with full parameter docs |
+| [Tools Reference](docs/tools-reference.md) | All 16 MCP tools with full parameter docs |
 | [Memory Types](docs/memory-types.md) | Type system, three layers, [smart routing](docs/memory-types.md#smart-router), [decay](docs/memory-types.md#decay-algorithm) |
 | [Configuration](docs/configuration.md) | Storage paths, TTL, embedding, environment variables |
 | [Agent Integration](docs/agent-integration.md) | System prompt instructions for automatic tool usage |

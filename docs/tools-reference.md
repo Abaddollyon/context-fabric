@@ -1,6 +1,6 @@
 # Tools Reference
 
-All 12 MCP tools with full parameter docs and example payloads. Your AI calls these automatically -- you rarely need to invoke them by hand.
+All 16 MCP tools with full parameter docs and example payloads. Your AI calls these automatically -- you rarely need to invoke them by hand.
 
 ## Table of Contents
 
@@ -13,6 +13,11 @@ All 12 MCP tools with full parameter docs and example payloads. Your AI calls th
   - [context.orient](#contextorient)
 - [Code Tools](#code-tools)
   - [context.searchCode](#contextsearchcode)
+- [CRUD Tools](#crud-tools)
+  - [context.get](#contextget)
+  - [context.update](#contextupdate)
+  - [context.delete](#contextdelete)
+  - [context.list](#contextlist)
 - [Management Tools](#management-tools)
   - [context.summarize](#contextsummarize)
   - [context.promote](#contextpromote)
@@ -446,6 +451,173 @@ Search the project's source code index. Supports three modes: full-text search, 
 
 **Tier 2** (functions and classes):
 - Java, C#, Ruby, C/C++
+
+---
+
+## CRUD Tools
+
+### context.get
+
+Get a specific memory by its ID. Searches across all layers (L1, L2, L3) and returns the memory along with which layer it was found in.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `memoryId` | string | Yes | ID of the memory to retrieve |
+| `projectPath` | string | No | Project path. Defaults to current working directory |
+
+#### Example Request
+
+```json
+{
+  "memoryId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
+#### Example Response
+
+```json
+{
+  "memory": {
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "type": "decision",
+    "content": "Use Zod for all API input validation.",
+    "metadata": { "tags": ["validation", "zod"], "confidence": 0.95 },
+    "tags": ["validation", "zod"],
+    "createdAt": 1740474900000,
+    "updatedAt": 1740474900000,
+    "accessCount": 3
+  },
+  "layer": 2
+}
+```
+
+---
+
+### context.update
+
+Update an existing memory's content, metadata, or tags. L1 (working) memories cannot be updated — they are ephemeral; store a new one instead. L3 memories are re-embedded only if content changes (metadata/tag-only updates skip the ~50ms embedding step).
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `memoryId` | string | Yes | ID of the memory to update |
+| `content` | string | No | New content (replaces existing) |
+| `metadata` | object | No | Metadata fields to merge into existing metadata |
+| `tags` | string[] | No | New tags array (replaces existing tags) |
+| `projectPath` | string | No | Project path. Defaults to current working directory |
+
+#### Example Request
+
+```json
+{
+  "memoryId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "content": "Use Zod for all API validation. Schemas live in src/schemas/.",
+  "tags": ["validation", "zod", "api"]
+}
+```
+
+#### Example Response
+
+```json
+{
+  "memory": {
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "type": "decision",
+    "content": "Use Zod for all API validation. Schemas live in src/schemas/.",
+    "tags": ["validation", "zod", "api"],
+    "createdAt": 1740474900000,
+    "updatedAt": 1740478500000
+  },
+  "layer": 2,
+  "success": true
+}
+```
+
+> [!NOTE]
+> Updating L1 memories returns an error: "Cannot update L1 (working) memories. They are ephemeral — store a new one instead."
+
+---
+
+### context.delete
+
+Delete a memory by its ID. Searches across all layers and deletes from whichever layer it lives in. Throws an error if the memory is not found.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `memoryId` | string | Yes | ID of the memory to delete |
+| `projectPath` | string | No | Project path. Defaults to current working directory |
+
+#### Example Request
+
+```json
+{
+  "memoryId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
+
+#### Example Response
+
+```json
+{
+  "success": true,
+  "deletedFrom": 2
+}
+```
+
+---
+
+### context.list
+
+List and browse memories with optional filters. Supports pagination. Defaults to L2 (project) memories.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `layer` | number | No | Memory layer: `1` (working), `2` (project), `3` (semantic). Default: `2` |
+| `type` | string | No | Filter by memory type |
+| `tags` | string[] | No | Filter by tags (OR logic — matches if any tag is present) |
+| `limit` | number | No | Maximum results to return (default: `20`) |
+| `offset` | number | No | Offset for pagination (default: `0`) |
+| `projectPath` | string | No | Project path. Defaults to current working directory |
+
+#### Example Request
+
+```json
+{
+  "layer": 2,
+  "type": "decision",
+  "limit": 10,
+  "offset": 0
+}
+```
+
+#### Example Response
+
+```json
+{
+  "memories": [
+    {
+      "id": "mem-042",
+      "type": "decision",
+      "content": "Use Zod for all API validation.",
+      "metadata": { "tags": ["validation"] },
+      "tags": ["validation"],
+      "createdAt": 1740474900000,
+      "updatedAt": 1740474900000
+    }
+  ],
+  "total": 47,
+  "limit": 10,
+  "offset": 0,
+  "layer": 2
+}
+```
 
 ---
 

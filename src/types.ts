@@ -327,7 +327,7 @@ export interface OrientationContext {
 export interface FabricConfig {
   storage: {
     l2Path: string; // SQLite path
-    l3Path: string; // ChromaDB path
+    l3Path: string; // SQLite + embeddings path
     backupIntervalHours: number;
   };
   ttl: {

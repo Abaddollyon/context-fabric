@@ -156,6 +156,33 @@ const SearchCodeSchema = z.object({
   projectPath: z.string().optional(),
 });
 
+const GetMemorySchema = z.object({
+  memoryId: z.string().min(1),
+  projectPath: z.string().optional(),
+});
+
+const UpdateMemorySchema = z.object({
+  memoryId: z.string().min(1),
+  content: z.string().optional(),
+  metadata: z.record(z.unknown()).optional(),
+  tags: z.array(z.string()).optional(),
+  projectPath: z.string().optional(),
+});
+
+const DeleteMemorySchema = z.object({
+  memoryId: z.string().min(1),
+  projectPath: z.string().optional(),
+});
+
+const ListMemoriesSchema = z.object({
+  layer: z.number().int().min(1).max(3).optional(),
+  type: z.enum(["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"]).optional(),
+  tags: z.array(z.string()).optional(),
+  limit: z.number().int().positive().default(20),
+  offset: z.number().int().min(0).default(0),
+  projectPath: z.string().optional(),
+});
+
 // ============================================================================
 // Tool Definitions
 // ============================================================================
@@ -400,6 +427,64 @@ const TOOLS: Tool[] = [
         projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "context.get",
+    description: "Get a specific memory by its ID. Searches across all layers (L1→L2→L3). Returns the memory and the layer it was found in.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memoryId: { type: "string", description: "ID of the memory to retrieve" },
+        projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
+      },
+      required: ["memoryId"],
+    },
+  },
+  {
+    name: "context.update",
+    description: "Update an existing memory's content, metadata, or tags. L1 memories cannot be updated (they are ephemeral). L3 memories are re-embedded only if content changes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memoryId: { type: "string", description: "ID of the memory to update" },
+        content: { type: "string", description: "New content (optional)" },
+        metadata: { type: "object", description: "Metadata fields to merge (optional)" },
+        tags: { type: "array", items: { type: "string" }, description: "New tags array (replaces existing tags)" },
+        projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
+      },
+      required: ["memoryId"],
+    },
+  },
+  {
+    name: "context.delete",
+    description: "Delete a memory by its ID. Searches across all layers and deletes from whichever layer it lives in.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        memoryId: { type: "string", description: "ID of the memory to delete" },
+        projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
+      },
+      required: ["memoryId"],
+    },
+  },
+  {
+    name: "context.list",
+    description: "List and browse memories with optional filters. Supports pagination. Defaults to L2 (project) memories.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        layer: { type: "number", description: "Memory layer: 1 (working), 2 (project), or 3 (semantic). Defaults to 2." },
+        type: {
+          type: "string",
+          enum: ["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"],
+          description: "Filter by memory type",
+        },
+        tags: { type: "array", items: { type: "string" }, description: "Filter by tags (OR logic)" },
+        limit: { type: "number", default: 20, description: "Maximum results to return (default: 20)" },
+        offset: { type: "number", default: 0, description: "Offset for pagination (default: 0)" },
+        projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
+      },
     },
   },
   {
@@ -723,6 +808,97 @@ async function handleSearchCode(args: unknown): Promise<unknown> {
   };
 }
 
+async function handleGetMemory(args: unknown): Promise<unknown> {
+  const params = GetMemorySchema.parse(args);
+  const engine = getEngine(params.projectPath);
+
+  const result = await engine.getMemory(params.memoryId);
+  if (!result) {
+    throw new Error(`Memory not found: ${params.memoryId}`);
+  }
+
+  return {
+    memory: {
+      id: result.memory.id,
+      type: result.memory.type,
+      content: result.memory.content,
+      metadata: result.memory.metadata,
+      tags: result.memory.tags,
+      createdAt: result.memory.createdAt,
+      updatedAt: result.memory.updatedAt,
+      accessCount: result.memory.accessCount,
+    },
+    layer: result.layer,
+  };
+}
+
+async function handleUpdateMemory(args: unknown): Promise<unknown> {
+  const params = UpdateMemorySchema.parse(args);
+  const engine = getEngine(params.projectPath);
+
+  const updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[] } = {};
+  if (params.content !== undefined) updates.content = params.content;
+  if (params.metadata !== undefined) updates.metadata = params.metadata;
+  if (params.tags !== undefined) updates.tags = params.tags;
+
+  const result = await engine.updateMemory(params.memoryId, updates);
+
+  return {
+    memory: {
+      id: result.memory.id,
+      type: result.memory.type,
+      content: result.memory.content,
+      metadata: result.memory.metadata,
+      tags: result.memory.tags,
+      createdAt: result.memory.createdAt,
+      updatedAt: result.memory.updatedAt,
+    },
+    layer: result.layer,
+    success: true,
+  };
+}
+
+async function handleDeleteMemory(args: unknown): Promise<unknown> {
+  const params = DeleteMemorySchema.parse(args);
+  const engine = getEngine(params.projectPath);
+
+  const result = await engine.deleteMemory(params.memoryId);
+
+  return {
+    success: true,
+    deletedFrom: result.deletedFrom,
+  };
+}
+
+async function handleListMemories(args: unknown): Promise<unknown> {
+  const params = ListMemoriesSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+
+  const result = await engine.listMemories({
+    layer: params.layer as import('./types.js').MemoryLayer | undefined,
+    type: params.type,
+    tags: params.tags,
+    limit: params.limit,
+    offset: params.offset,
+  });
+
+  return {
+    memories: result.memories.map(m => ({
+      id: m.id,
+      type: m.type,
+      content: m.content,
+      metadata: m.metadata,
+      tags: m.tags,
+      createdAt: m.createdAt,
+      updatedAt: m.updatedAt,
+    })),
+    total: result.total,
+    limit: params.limit,
+    offset: params.offset,
+    layer: params.layer ?? 2,
+  };
+}
+
 async function handleSetup(args: unknown): Promise<unknown> {
   const params = SetupSchema.parse(args);
   const cli = params.cli as SupportedCLI;
@@ -754,8 +930,8 @@ async function handlePromote(args: unknown): Promise<unknown> {
         memoryId: memory.id,
         newLayer: memory.layer,
       };
-    } catch {
-      // Memory not in this engine — try the next one
+    } catch (err) {
+      console.error('[ContextFabric] Promote failed for engine:', err);
     }
   }
 
@@ -777,7 +953,7 @@ async function createServer(): Promise<Server> {
   const server = new Server(
     {
       name: "context-fabric",
-      version: "0.1.0",
+      version: "0.5.2",
     },
     {
       capabilities: {
@@ -831,6 +1007,18 @@ async function createServer(): Promise<Server> {
           break;
         case "context.searchCode":
           result = await handleSearchCode(args);
+          break;
+        case "context.get":
+          result = await handleGetMemory(args);
+          break;
+        case "context.update":
+          result = await handleUpdateMemory(args);
+          break;
+        case "context.delete":
+          result = await handleDeleteMemory(args);
+          break;
+        case "context.list":
+          result = await handleListMemories(args);
           break;
         case "context.setup":
           result = await handleSetup(args);

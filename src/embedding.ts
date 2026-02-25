@@ -2,23 +2,32 @@
 
 import { FlagEmbedding, EmbeddingModel } from 'fastembed';
 
+const MAX_CACHE_SIZE = 10_000;
+
 export class EmbeddingService {
   private model: FlagEmbedding | null = null;
   private cache: Map<string, number[]> = new Map();
   private modelName: EmbeddingModel;
   private initialized: boolean = false;
   private initPromise: Promise<void> | null = null;
+  private initFailed: boolean = false;
 
   constructor(modelName: EmbeddingModel = EmbeddingModel.BGESmallEN) {
     this.modelName = modelName;
   }
 
   /**
-   * Initialize the embedding model
+   * Initialize the embedding model.
+   * Uses a circuit breaker: if init fails once, subsequent calls throw
+   * immediately instead of retrying forever.
    */
   private async init(): Promise<void> {
     if (this.initialized) return;
-    
+
+    if (this.initFailed) {
+      throw new Error('Embedding model initialization previously failed. Restart the server to retry.');
+    }
+
     if (this.initPromise) {
       return this.initPromise;
     }
@@ -34,7 +43,26 @@ export class EmbeddingService {
       this.initialized = true;
     })();
 
-    return this.initPromise;
+    try {
+      return await this.initPromise;
+    } catch (err) {
+      this.initFailed = true;
+      this.initPromise = null;
+      throw err;
+    }
+  }
+
+  /**
+   * Evict the oldest cache entry when the cache exceeds MAX_CACHE_SIZE.
+   * Map preserves insertion order, so the first key is the oldest.
+   */
+  private evictIfNeeded(): void {
+    if (this.cache.size >= MAX_CACHE_SIZE) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) {
+        this.cache.delete(oldest);
+      }
+    }
   }
 
   /**
@@ -87,8 +115,9 @@ export class EmbeddingService {
     }
 
     const result = this.normalizeEmbedding(embeddings[0]);
-    
-    // Cache the result
+
+    // Cache the result (with LRU eviction)
+    this.evictIfNeeded();
     this.cache.set(text, result);
     
     return result;
@@ -137,9 +166,10 @@ export class EmbeddingService {
         }
       }
 
-      // Store in cache and results
+      // Store in cache and results (with LRU eviction)
       for (let i = 0; i < uncachedTexts.length; i++) {
         const embedding = this.normalizeEmbedding(embeddings[i]);
+        this.evictIfNeeded();
         this.cache.set(uncachedTexts[i], embedding);
         results[uncachedIndices[i]] = embedding;
       }

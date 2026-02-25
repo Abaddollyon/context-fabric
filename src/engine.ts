@@ -73,6 +73,14 @@ export interface SummaryResult {
   layer: MemoryLayer;
 }
 
+export interface ListMemoriesOptions {
+  layer?: MemoryLayer;
+  type?: MemoryType;
+  tags?: string[];
+  limit?: number;
+  offset?: number;
+}
+
 export interface EngineOptions {
   projectPath: string;
   config?: FabricConfig;
@@ -128,7 +136,7 @@ export class ContextEngine {
     });
 
     // Initialize helpers
-    this.patternExtractor = new PatternExtractor(this.l2, this.l3);
+    this.patternExtractor = new PatternExtractor(this.l2, this.l3, this.log.bind(this));
     this.eventHandler = new EventHandler(this);
 
     // Start auto-cleanup if enabled
@@ -246,8 +254,8 @@ export class ContextEngine {
       try {
         const semanticResults = await this.l3.recall(query, 5);
         l3Relevant.push(...semanticResults);
-      } catch {
-        // L3 recall can fail when the embedding model is unavailable — degrade gracefully
+      } catch (err) {
+        this.log('warn', 'L3 recall unavailable in getContextWindow:', err);
       }
     }
 
@@ -298,8 +306,8 @@ export class ContextEngine {
             results.push({ ...r, layer: MemoryLayer.L3_SEMANTIC });
           }
         }
-      } catch {
-        // L3 recall can fail when the embedding model is unavailable — degrade gracefully
+      } catch (err) {
+        this.log('warn', 'L3 recall unavailable in recall():', err);
       }
     }
 
@@ -473,8 +481,10 @@ export class ContextEngine {
     let recentMemories = [] as import('./types.js').Memory[];
 
     if (lastSeenMs !== null) {
-      const durationMs = anchor.epochMs - lastSeenMs;
-      const fromAnchor = ts.convert(lastSeenMs, anchor.timezone);
+      // lastSeenMs is guaranteed non-null inside this block
+      const lastSeen = lastSeenMs;
+      const durationMs = anchor.epochMs - lastSeen;
+      const fromAnchor = ts.convert(lastSeen, anchor.timezone);
       offlineGap = {
         durationMs,
         durationHuman: ts.formatDuration(durationMs),
@@ -482,7 +492,7 @@ export class ContextEngine {
         to: anchor.iso,
         memoriesAdded: 0,
       };
-      recentMemories = this.l2.getMemoriesSince(lastSeenMs);
+      recentMemories = this.l2.getMemoriesSince(lastSeen);
       offlineGap.memoriesAdded = recentMemories.length;
     }
 
@@ -497,7 +507,7 @@ export class ContextEngine {
       if (offlineGap.durationMs < 30000) {
         lines.push('You were just here moments ago.');
       } else {
-        lines.push(`Last session: ${offlineGap.durationHuman} ago (since ${ts.convert(lastSeenMs!, anchor.timezone).timeOfDay}).`);
+        lines.push(`Last session: ${offlineGap.durationHuman} ago (since ${ts.convert(lastSeenMs as number, anchor.timezone).timeOfDay}).`);
       }
       if (offlineGap.memoriesAdded > 0) {
         lines.push(`${offlineGap.memoriesAdded} new ${offlineGap.memoriesAdded === 1 ? 'memory was' : 'memories were'} added while offline.`);
@@ -512,9 +522,11 @@ export class ContextEngine {
     if (this.config.codeIndex.enabled) {
       try {
         const idx = this.getCodeIndex();
-        idx.ensureReady().then(() => idx.incrementalUpdate()).catch(() => {/* non-critical */});
-      } catch {
-        /* non-critical */
+        idx.ensureReady().then(() => idx.incrementalUpdate()).catch((err) => {
+          console.error('[ContextFabric] Code index update failed:', err);
+        });
+      } catch (err) {
+        console.error('[ContextFabric] Code index initialization failed:', err);
       }
     }
 
@@ -525,6 +537,163 @@ export class ContextEngine {
       recentMemories,
       summary: lines.join(' '),
     };
+  }
+
+  // ============================================================================
+  // CRUD Operations
+  // ============================================================================
+
+  /**
+   * Get a memory by ID, searching L1→L2→L3 cascade.
+   * Returns the memory and the layer it was found in, or null.
+   */
+  async getMemory(id: string): Promise<{ memory: Memory; layer: MemoryLayer } | null> {
+    // L1
+    const l1 = this.l1.get(id);
+    if (l1) return { memory: l1, layer: MemoryLayer.L1_WORKING };
+
+    // L2
+    const l2 = await this.l2.get(id);
+    if (l2) return { memory: l2, layer: MemoryLayer.L2_PROJECT };
+
+    // L3
+    const l3 = await this.l3.get(id);
+    if (l3) return { memory: { ...l3, layer: MemoryLayer.L3_SEMANTIC }, layer: MemoryLayer.L3_SEMANTIC };
+
+    return null;
+  }
+
+  /**
+   * Update a memory by ID. L1 updates are rejected (ephemeral — store a new one instead).
+   * L3 re-embeds only if content changed.
+   */
+  async updateMemory(id: string, updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[] }): Promise<{ memory: Memory; layer: MemoryLayer }> {
+    const found = await this.getMemory(id);
+    if (!found) throw new Error(`Memory not found: ${id}`);
+
+    if (found.layer === MemoryLayer.L1_WORKING) {
+      throw new Error('Cannot update L1 (working) memories. They are ephemeral — store a new one instead.');
+    }
+
+    if (found.layer === MemoryLayer.L2_PROJECT) {
+      const partial: Partial<Memory> = {};
+      if (updates.content !== undefined) partial.content = updates.content;
+      if (updates.tags !== undefined) partial.tags = updates.tags;
+      if (updates.metadata !== undefined) {
+        partial.metadata = { ...found.memory.metadata, ...updates.metadata } as MemoryMetadata;
+      }
+      const updated = await this.l2.update(id, partial);
+      return { memory: updated, layer: MemoryLayer.L2_PROJECT };
+    }
+
+    // L3
+    const updated = await this.l3.update(id, updates);
+    return { memory: { ...updated, layer: MemoryLayer.L3_SEMANTIC }, layer: MemoryLayer.L3_SEMANTIC };
+  }
+
+  /**
+   * Delete a memory by ID. Searches across all layers.
+   * Throws if not found.
+   */
+  async deleteMemory(id: string): Promise<{ deletedFrom: MemoryLayer }> {
+    // L1
+    if (this.l1.get(id)) {
+      this.l1.delete(id);
+      return { deletedFrom: MemoryLayer.L1_WORKING };
+    }
+
+    // L2
+    const l2Deleted = await this.l2.delete(id);
+    if (l2Deleted) return { deletedFrom: MemoryLayer.L2_PROJECT };
+
+    // L3
+    const l3Deleted = await this.l3.delete(id);
+    if (l3Deleted) return { deletedFrom: MemoryLayer.L3_SEMANTIC };
+
+    throw new Error(`Memory not found: ${id}`);
+  }
+
+  /**
+   * List memories with optional filters. Defaults to L2.
+   */
+  async listMemories(options: ListMemoriesOptions = {}): Promise<{ memories: Memory[]; total: number }> {
+    const layer = options.layer ?? MemoryLayer.L2_PROJECT;
+    const limit = options.limit ?? 20;
+    const offset = options.offset ?? 0;
+
+    if (layer === MemoryLayer.L1_WORKING) {
+      let all = this.l1.getAll();
+      if (options.type) all = all.filter(m => m.type === options.type);
+      if (options.tags?.length) {
+        const filterTags = options.tags;
+        all = all.filter(m => {
+          const mTags = m.tags || m.metadata?.tags || [];
+          return filterTags.some(t => mTags.includes(t));
+        });
+      }
+      const total = all.length;
+      return { memories: all.slice(offset, offset + limit), total };
+    }
+
+    if (layer === MemoryLayer.L2_PROJECT) {
+      if (options.type && !options.tags?.length) {
+        const memories = this.l2.findByTypePaginated(options.type, limit, offset);
+        const total = this.l2.countByType(options.type);
+        return { memories, total };
+      }
+      if (options.tags?.length && !options.type) {
+        const filterTags = options.tags;
+        const memories = this.l2.findByTagsPaginated(filterTags, limit, offset);
+        const total = this.l2.countByTags(filterTags);
+        return { memories, total };
+      }
+      if (options.type && options.tags?.length) {
+        // Both filters: use type query then filter tags in JS (small result set)
+        const filterTags = options.tags;
+        const byType = this.l2.findByTypePaginated(options.type, 10000, 0);
+        const filtered = byType.filter(m => {
+          const mTags = m.tags || m.metadata?.tags || [];
+          return filterTags.some(t => mTags.includes(t));
+        });
+        const total = filtered.length;
+        return { memories: filtered.slice(offset, offset + limit), total };
+      }
+      // No filters — SQL-level pagination
+      const memories = await this.l2.getAll(limit, offset);
+      const total = this.l2.count();
+      return { memories, total };
+    }
+
+    if (layer === MemoryLayer.L3_SEMANTIC) {
+      if (options.type && !options.tags?.length) {
+        const memories = this.l3.findByType(options.type, limit, offset);
+        const total = this.l3.countByType(options.type);
+        return { memories, total };
+      }
+      if (options.tags?.length && !options.type) {
+        const filterTags = options.tags;
+        const memories = this.l3.findByTags(filterTags, limit, offset);
+        const total = this.l3.countByTags(filterTags);
+        return { memories, total };
+      }
+      if (options.type && options.tags?.length) {
+        // Both filters: use type query then filter tags in JS (small result set)
+        const filterTags = options.tags;
+        const byType = this.l3.findByType(options.type, 10000, 0);
+        const filtered = byType.filter(m => {
+          const mTags = m.tags || m.metadata?.tags || [];
+          return filterTags.some(t => mTags.includes(t));
+        });
+        const total = filtered.length;
+        return { memories: filtered.slice(offset, offset + limit), total };
+      }
+      // No filters — SQL-level pagination
+      const memories = await this.l3.getAll(limit, offset);
+      const total = await this.l3.count();
+      return { memories, total };
+    }
+
+    throw new Error(`Invalid layer: ${layer}`);
   }
 
   /**

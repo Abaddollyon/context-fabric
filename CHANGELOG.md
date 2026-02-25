@@ -14,6 +14,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Web UI for memory management
 - Metrics and analytics dashboard
 
+## [0.5.2] - 2026-02-25
+
+### Added
+- **Full CRUD MCP tools** — 4 new tools for complete memory management (12→16 tools):
+  - `context.get` — Retrieve a specific memory by ID, searching across all layers (L1→L2→L3)
+  - `context.update` — Update a memory's content, metadata, or tags. L3 re-embeds only on content change
+  - `context.delete` — Delete a memory by ID from whichever layer it lives in
+  - `context.list` — Browse memories with pagination, layer/type/tag filters. Defaults to L2
+- **`SemanticMemoryLayer.update()`** — Update L3 memories with selective re-embedding (skips 50ms model invocation when only metadata/tags change)
+- **`SemanticMemoryLayer.getAll(limit, offset)`** — Paginated listing of L3 memories ordered by relevance score
+- **`ProjectMemoryLayer.count()`** — Total memory count for accurate pagination totals
+- **`ContextEngine` CRUD methods** — `getMemory()`, `updateMemory()`, `deleteMemory()`, `listMemories()` with cross-layer orchestration
+
+### Fixed
+- **E2E test memory leak** — E2E suite now uses `isEphemeral: true` so test memories are stored in the temp project directory and cleaned up with it, instead of leaking into the global L2 database on every test run
+- **Embedding circuit breaker** — if model init fails, subsequent calls throw immediately instead of retrying on every request
+- **Embedding LRU cache** — evict oldest entry when cache exceeds 10K entries, preventing unbounded memory growth
+- **`listMemories` SQL filtering** — add `findByTypePaginated`, `findByTagsPaginated`, `countByType`, `countByTags` to L2 and L3 layers; engine no longer loads all rows into RAM for filtered queries
+- **Version mismatches** — smithery.yaml and server.ts were pinned to old versions
+- **docker-compose.yml** — remove dead ChromaDB service and invalid bun healthcheck
+- **.env.example** — remove stale ChromaDB/EMBEDDING_MODEL/L3_STORAGE_PATH references
+
+### Changed
+- **Missing tools in smithery.yaml** — added searchCode, get, update, delete, list (were absent)
+
+### Design Decisions
+- L1 (working) memories cannot be updated — they are ephemeral; store a new one instead
+- `deleteMemory()` throws on not-found — caller error, surface it
+- `listMemories()` defaults to L2 — the primary persistent store
+- `getMemory()` bumps L2 access count — consistent with existing `l2.get()` behaviour
+
+### Technical
+- All 517 tests pass (39 new + 478 existing) across unit, integration, and E2E suites
+- New CRUD tests in `engine.test.ts` (20 tests), `server.test.ts` (15 tests), `full-flow.test.ts` (4 tests)
+- Updated all docs to reflect 16 MCP tools (was 12)
+
 ## [0.4.5] - 2026-02-25
 
 ### Added
@@ -161,7 +197,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic type definitions
 - Development environment setup
 
-[Unreleased]: https://github.com/Abaddollyon/context-fabric/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/Abaddollyon/context-fabric/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/Abaddollyon/context-fabric/compare/v0.4.5...v0.5.2
 [0.4.5]: https://github.com/Abaddollyon/context-fabric/compare/v0.4.0...v0.4.5
 [0.4.0]: https://github.com/Abaddollyon/context-fabric/compare/v0.2.0...v0.4.0
 [0.2.0]: https://github.com/Abaddollyon/context-fabric/compare/v0.1.0...v0.2.0

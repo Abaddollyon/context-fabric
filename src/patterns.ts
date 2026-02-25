@@ -31,10 +31,16 @@ export interface ExtractedPattern {
 export class PatternExtractor {
   private l2Layer?: ProjectMemoryLayer;
   private l3Layer?: SemanticMemoryLayer;
+  private readonly logFn: (level: 'debug' | 'info' | 'warn' | 'error', ...args: unknown[]) => void;
 
-  constructor(l2Layer?: ProjectMemoryLayer, l3Layer?: SemanticMemoryLayer) {
+  constructor(
+    l2Layer?: ProjectMemoryLayer,
+    l3Layer?: SemanticMemoryLayer,
+    logFn?: (level: 'debug' | 'info' | 'warn' | 'error', ...args: unknown[]) => void,
+  ) {
     this.l2Layer = l2Layer;
     this.l3Layer = l3Layer;
+    this.logFn = logFn ?? ((level, ...args) => console.error(`[ContextFabric:${level}]`, ...args));
   }
 
   /**
@@ -67,8 +73,8 @@ export class PatternExtractor {
             patterns.push(pattern);
           }
         }
-      } catch {
-        // L3 recall can fail when the embedding model is unavailable — degrade gracefully
+      } catch (err) {
+        this.logFn('warn', 'L3 pattern extraction unavailable:', err);
       }
     }
 

@@ -25,7 +25,7 @@ describe('SemanticMemoryLayer', () => {
       baseDir: testDir,
       decayDays: 30,
       collectionName: `test_${Date.now()}`,
-      isEphemeral: true, // Use in-memory ChromaDB for tests
+      isEphemeral: true, // Use in-memory SQLite for tests
     });
   });
 

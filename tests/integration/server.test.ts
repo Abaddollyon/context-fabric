@@ -181,6 +181,75 @@ describe('MCP Server Integration', () => {
     };
   }
   
+  async function handleGetMemory(args: { memoryId: string; projectPath?: string }) {
+    const result = await engine.getMemory(args.memoryId);
+    if (!result) throw new Error(`Memory not found: ${args.memoryId}`);
+    return {
+      memory: {
+        id: result.memory.id,
+        type: result.memory.type,
+        content: result.memory.content,
+        metadata: result.memory.metadata,
+        tags: result.memory.tags,
+        createdAt: result.memory.createdAt,
+        updatedAt: result.memory.updatedAt,
+        accessCount: result.memory.accessCount,
+      },
+      layer: result.layer,
+    };
+  }
+
+  async function handleUpdateMemory(args: { memoryId: string; content?: string; metadata?: Record<string, unknown>; tags?: string[]; projectPath?: string }) {
+    const updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[] } = {};
+    if (args.content !== undefined) updates.content = args.content;
+    if (args.metadata !== undefined) updates.metadata = args.metadata;
+    if (args.tags !== undefined) updates.tags = args.tags;
+    const result = await engine.updateMemory(args.memoryId, updates);
+    return {
+      memory: {
+        id: result.memory.id,
+        type: result.memory.type,
+        content: result.memory.content,
+        metadata: result.memory.metadata,
+        tags: result.memory.tags,
+        createdAt: result.memory.createdAt,
+        updatedAt: result.memory.updatedAt,
+      },
+      layer: result.layer,
+      success: true,
+    };
+  }
+
+  async function handleDeleteMemory(args: { memoryId: string; projectPath?: string }) {
+    const result = await engine.deleteMemory(args.memoryId);
+    return { success: true, deletedFrom: result.deletedFrom };
+  }
+
+  async function handleListMemories(args: { layer?: number; type?: string; tags?: string[]; limit?: number; offset?: number; projectPath?: string }) {
+    const result = await engine.listMemories({
+      layer: args.layer as MemoryLayer | undefined,
+      type: args.type as any,
+      tags: args.tags,
+      limit: args.limit ?? 20,
+      offset: args.offset ?? 0,
+    });
+    return {
+      memories: result.memories.map(m => ({
+        id: m.id,
+        type: m.type,
+        content: m.content,
+        metadata: m.metadata,
+        tags: m.tags,
+        createdAt: m.createdAt,
+        updatedAt: m.updatedAt,
+      })),
+      total: result.total,
+      limit: args.limit ?? 20,
+      offset: args.offset ?? 0,
+      layer: args.layer ?? 2,
+    };
+  }
+
   async function handlePromote(args: {
     memoryId: string;
     fromLayer: number;
@@ -821,6 +890,180 @@ export function createUser(name: string): User {
       expect(result.results).toBeDefined();
       expect(Array.isArray(result.results)).toBe(true);
       expect(result.indexStatus).toBeDefined();
+    });
+  });
+
+  // ============================================================================
+  // Tool: context.get
+  // ============================================================================
+
+  describe('context.get', () => {
+    it('should get a memory by ID from L2', async () => {
+      const stored = await handleStore({
+        type: 'decision',
+        content: 'Retrievable decision',
+        metadata: { cliType: 'kimi' },
+      });
+
+      const result = await handleGetMemory({ memoryId: stored.id });
+      expect(result.memory.content).toBe('Retrievable decision');
+      expect(result.layer).toBe(MemoryLayer.L2_PROJECT);
+    });
+
+    it('should get a memory by ID from L1', async () => {
+      const mem = await engine.store('L1 note', 'scratchpad', { layer: MemoryLayer.L1_WORKING });
+      const result = await handleGetMemory({ memoryId: mem.id });
+      expect(result.memory.content).toBe('L1 note');
+      expect(result.layer).toBe(MemoryLayer.L1_WORKING);
+    });
+
+    it('should throw for non-existent memory', async () => {
+      await expect(
+        handleGetMemory({ memoryId: 'non-existent' })
+      ).rejects.toThrow('Memory not found');
+    });
+  });
+
+  // ============================================================================
+  // Tool: context.update
+  // ============================================================================
+
+  describe('context.update', () => {
+    it('should update memory content', async () => {
+      const stored = await handleStore({
+        type: 'decision',
+        content: 'Original',
+        metadata: { cliType: 'kimi' },
+      });
+
+      const result = await handleUpdateMemory({
+        memoryId: stored.id,
+        content: 'Updated content',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.memory.content).toBe('Updated content');
+    });
+
+    it('should update memory tags', async () => {
+      const stored = await handleStore({
+        type: 'decision',
+        content: 'With tags',
+        metadata: { cliType: 'kimi', tags: ['old'] },
+      });
+
+      const result = await handleUpdateMemory({
+        memoryId: stored.id,
+        tags: ['new', 'tags'],
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.memory.tags).toEqual(['new', 'tags']);
+    });
+
+    it('should reject L1 updates', async () => {
+      const mem = await engine.store('Ephemeral', 'scratchpad', { layer: MemoryLayer.L1_WORKING });
+
+      await expect(
+        handleUpdateMemory({ memoryId: mem.id, content: 'Updated' })
+      ).rejects.toThrow('Cannot update L1');
+    });
+
+    it('should throw for non-existent memory', async () => {
+      await expect(
+        handleUpdateMemory({ memoryId: 'non-existent', content: 'x' })
+      ).rejects.toThrow('Memory not found');
+    });
+  });
+
+  // ============================================================================
+  // Tool: context.delete
+  // ============================================================================
+
+  describe('context.delete', () => {
+    it('should delete a memory', async () => {
+      const stored = await handleStore({
+        type: 'decision',
+        content: 'To delete',
+        metadata: { cliType: 'kimi' },
+      });
+
+      const result = await handleDeleteMemory({ memoryId: stored.id });
+      expect(result.success).toBe(true);
+      expect(result.deletedFrom).toBe(MemoryLayer.L2_PROJECT);
+
+      // Verify it's gone
+      await expect(
+        handleGetMemory({ memoryId: stored.id })
+      ).rejects.toThrow('Memory not found');
+    });
+
+    it('should throw for non-existent memory', async () => {
+      await expect(
+        handleDeleteMemory({ memoryId: 'non-existent' })
+      ).rejects.toThrow('Memory not found');
+    });
+  });
+
+  // ============================================================================
+  // Tool: context.list
+  // ============================================================================
+
+  describe('context.list', () => {
+    it('should list memories with default pagination', async () => {
+      for (let i = 0; i < 5; i++) {
+        await handleStore({
+          type: 'decision',
+          content: `Decision ${i}`,
+          metadata: { cliType: 'kimi' },
+        });
+      }
+
+      const result = await handleListMemories({});
+      expect(result.memories.length).toBeGreaterThanOrEqual(5);
+      expect(result.total).toBeGreaterThanOrEqual(5);
+      expect(result.layer).toBe(2);
+    });
+
+    it('should paginate results', async () => {
+      // Clear and create fresh data
+      for (let i = 0; i < 5; i++) {
+        await handleStore({
+          type: 'bug_fix',
+          content: `Bug ${i}`,
+          metadata: { cliType: 'kimi' },
+        });
+      }
+
+      const page1 = await handleListMemories({ limit: 2, offset: 0 });
+      expect(page1.memories.length).toBeLessThanOrEqual(2);
+      expect(page1.limit).toBe(2);
+      expect(page1.offset).toBe(0);
+    });
+
+    it('should filter by type', async () => {
+      await handleStore({ type: 'decision', content: 'D', metadata: { cliType: 'kimi' } });
+      await handleStore({ type: 'bug_fix', content: 'B', metadata: { cliType: 'kimi' } });
+
+      const result = await handleListMemories({ type: 'decision' });
+      expect(result.memories.every((m: any) => m.type === 'decision')).toBe(true);
+    });
+
+    it('should filter by tags', async () => {
+      await handleStore({ type: 'decision', content: 'Tagged', metadata: { cliType: 'kimi', tags: ['special'] } });
+
+      const result = await handleListMemories({ tags: ['special'] });
+      for (const m of result.memories) {
+        const tags = (m as any).tags || (m as any).metadata?.tags || [];
+        expect(tags).toContain('special');
+      }
+    });
+
+    it('should list L1 memories', async () => {
+      await engine.store('L1 note', 'scratchpad', { layer: MemoryLayer.L1_WORKING });
+      const result = await handleListMemories({ layer: 1 });
+      expect(result.memories.length).toBeGreaterThan(0);
+      expect(result.layer).toBe(1);
     });
   });
 
