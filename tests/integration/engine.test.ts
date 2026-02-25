@@ -544,7 +544,7 @@ describe('ContextEngine Integration', () => {
       expect(ghostResult.suggestedActions).toBeDefined();
     });
 
-    it('should generate ghost messages from recent decisions', async () => {
+    it.skipIf(!hasEmbeddingModel)('should generate ghost messages from recent decisions', async () => {
       await engine.store(
         'Important architectural decision about caching',
         'decision',
