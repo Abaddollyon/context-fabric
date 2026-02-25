@@ -259,10 +259,10 @@ export class ContextEngine {
       }
     }
 
-    // Combine L2 and L3 for relevant memories
+    // Combine L2 and L3 for relevant memories (weight scales relevanceScore)
     const relevant: Memory[] = [
-      ...recentL2.map((m) => ({ ...m, relevanceScore: 0.8 })),
-      ...l3Relevant.map((m) => ({ ...m, relevanceScore: m.similarity })),
+      ...recentL2.map((m) => ({ ...m, relevanceScore: 0.8 * ((m.metadata?.weight ?? 3) / 3) })),
+      ...l3Relevant.map((m) => ({ ...m, relevanceScore: m.similarity * ((m.metadata?.weight ?? 3) / 3) })),
     ]
       .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
       .slice(0, maxRelevant);
@@ -331,9 +331,11 @@ export class ContextEngine {
       }
     }
 
-    // Sort by relevance and limit
+    // Sort by relevance (with weight multiplier) and limit
+    const weightedSimilarity = (m: RankedMemory) =>
+      m.similarity * ((m.metadata?.weight ?? 3) / 3);
     return results
-      .sort((a, b) => b.similarity - a.similarity)
+      .sort((a, b) => weightedSimilarity(b) - weightedSimilarity(a))
       .slice(0, limit);
   }
 

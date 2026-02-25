@@ -199,11 +199,14 @@ describe('MCP Server Integration', () => {
     };
   }
 
-  async function handleUpdateMemory(args: { memoryId: string; content?: string; metadata?: Record<string, unknown>; tags?: string[]; projectPath?: string }) {
+  async function handleUpdateMemory(args: { memoryId: string; content?: string; metadata?: Record<string, unknown>; tags?: string[]; weight?: number; projectPath?: string }) {
     const updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[] } = {};
     if (args.content !== undefined) updates.content = args.content;
     if (args.metadata !== undefined) updates.metadata = args.metadata;
     if (args.tags !== undefined) updates.tags = args.tags;
+    if (args.weight !== undefined) {
+      updates.metadata = { ...updates.metadata, weight: args.weight };
+    }
     const result = await engine.updateMemory(args.memoryId, updates);
     return {
       memory: {
@@ -1064,6 +1067,83 @@ export function createUser(name: string): User {
       const result = await handleListMemories({ layer: 1 });
       expect(result.memories.length).toBeGreaterThan(0);
       expect(result.layer).toBe(1);
+    });
+  });
+
+  // ============================================================================
+  // Memory Weighting
+  // ============================================================================
+
+  describe('context.store with weight', () => {
+    it('should store weight in metadata when specified', async () => {
+      const stored = await handleStore({
+        type: 'decision',
+        content: 'Weighted decision',
+        metadata: { cliType: 'kimi', weight: 5 },
+      });
+
+      const result = await handleGetMemory({ memoryId: stored.id });
+      expect(result.memory.metadata?.weight).toBe(5);
+    });
+
+    it('should default weight to 3 when not specified', async () => {
+      const stored = await handleStore({
+        type: 'decision',
+        content: 'Default weight decision',
+        metadata: { cliType: 'kimi' },
+      });
+
+      const result = await handleGetMemory({ memoryId: stored.id });
+      // Either weight is not set (defaults to 3 at query time) or stored as 3
+      expect(result.memory.metadata?.weight ?? 3).toBe(3);
+    });
+
+    it('should store explicit weight 3', async () => {
+      const stored = await handleStore({
+        type: 'convention',
+        content: 'Neutral weight memory',
+        metadata: { cliType: 'kimi', weight: 3 },
+      });
+
+      const result = await handleGetMemory({ memoryId: stored.id });
+      expect(result.memory.metadata?.weight).toBe(3);
+    });
+  });
+
+  describe('context.update with weight', () => {
+    it('should update weight via top-level weight param', async () => {
+      const stored = await handleStore({
+        type: 'decision',
+        content: 'Memory to reweight',
+        metadata: { cliType: 'kimi', weight: 3 },
+      });
+
+      const result = await handleUpdateMemory({
+        memoryId: stored.id,
+        weight: 2,
+      });
+
+      expect(result.success).toBe(true);
+
+      const fetched = await handleGetMemory({ memoryId: stored.id });
+      expect(fetched.memory.metadata?.weight).toBe(2);
+    });
+
+    it('should update weight via metadata field', async () => {
+      const stored = await handleStore({
+        type: 'decision',
+        content: 'Memory with metadata weight update',
+        metadata: { cliType: 'kimi', weight: 1 },
+      });
+
+      const result = await handleUpdateMemory({
+        memoryId: stored.id,
+        metadata: { weight: 5 },
+      });
+
+      expect(result.success).toBe(true);
+      const fetched = await handleGetMemory({ memoryId: stored.id });
+      expect(fetched.memory.metadata?.weight).toBe(5);
     });
   });
 

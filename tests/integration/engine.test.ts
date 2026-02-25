@@ -1076,6 +1076,100 @@ export function handleRequest(req: Request): Response {
   });
 
   // ============================================================================
+  // Memory Weighting
+  // ============================================================================
+
+  describe('memory weighting', () => {
+    it('should rank weight-5 memory above weight-1 memory in recall', async () => {
+      const highWeight = await engine.store(
+        'weight-ranking-test-alpha',
+        'decision',
+        { layer: MemoryLayer.L2_PROJECT, metadata: { weight: 5 } }
+      );
+      const lowWeight = await engine.store(
+        'weight-ranking-test-alpha',
+        'decision',
+        { layer: MemoryLayer.L2_PROJECT, metadata: { weight: 1 } }
+      );
+
+      const results = await engine.recall('weight-ranking-test-alpha', { limit: 10 });
+
+      const highIdx = results.findIndex(r => r.id === highWeight.id);
+      const lowIdx = results.findIndex(r => r.id === lowWeight.id);
+
+      expect(highIdx).toBeGreaterThanOrEqual(0);
+      expect(lowIdx).toBeGreaterThanOrEqual(0);
+      expect(highIdx).toBeLessThan(lowIdx);
+    });
+
+    it('should rank weight-5 memory above default-weight memory in recall', async () => {
+      const highWeight = await engine.store(
+        'weight-ranking-test-beta',
+        'convention',
+        { layer: MemoryLayer.L2_PROJECT, metadata: { weight: 5 } }
+      );
+      const defaultWeight = await engine.store(
+        'weight-ranking-test-beta',
+        'convention',
+        { layer: MemoryLayer.L2_PROJECT }
+      );
+
+      const results = await engine.recall('weight-ranking-test-beta', { limit: 10 });
+
+      const highIdx = results.findIndex(r => r.id === highWeight.id);
+      const defaultIdx = results.findIndex(r => r.id === defaultWeight.id);
+
+      expect(highIdx).toBeGreaterThanOrEqual(0);
+      expect(defaultIdx).toBeGreaterThanOrEqual(0);
+      expect(highIdx).toBeLessThan(defaultIdx);
+    });
+
+    it('should store weight in metadata', async () => {
+      const mem = await engine.store(
+        'Memory with explicit weight',
+        'decision',
+        { layer: MemoryLayer.L2_PROJECT, metadata: { weight: 4 } }
+      );
+
+      const found = await engine.getMemory(mem.id);
+      expect(found).not.toBeNull();
+      expect(found!.memory.metadata?.weight).toBe(4);
+    });
+
+    it('should default weight to 3 at query time when not set', async () => {
+      const noWeightMem = await engine.store(
+        'weight-default-gamma',
+        'decision',
+        { layer: MemoryLayer.L2_PROJECT }
+      );
+      const withWeight3 = await engine.store(
+        'weight-default-gamma',
+        'decision',
+        { layer: MemoryLayer.L2_PROJECT, metadata: { weight: 3 } }
+      );
+
+      const results = await engine.recall('weight-default-gamma', { limit: 10 });
+      const idx1 = results.findIndex(r => r.id === noWeightMem.id);
+      const idx2 = results.findIndex(r => r.id === withWeight3.id);
+
+      // Both should appear; since weight ?? 3 = 3 for both, same effective similarity
+      expect(idx1).toBeGreaterThanOrEqual(0);
+      expect(idx2).toBeGreaterThanOrEqual(0);
+    });
+
+    it('should update weight via updateMemory', async () => {
+      const mem = await engine.store(
+        'Memory to reweight',
+        'decision',
+        { layer: MemoryLayer.L2_PROJECT, metadata: { weight: 3 } }
+      );
+
+      const updated = await engine.updateMemory(mem.id, { metadata: { weight: 5 } });
+      expect(updated.memory.metadata?.weight).toBe(5);
+    });
+  });
+
+  // ============================================================================
   // Cleanup (requires L3 for seedTestMemories)
   // ============================================================================
 
