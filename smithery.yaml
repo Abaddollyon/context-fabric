@@ -2,7 +2,7 @@
 # https://smithery.ai/docs/registry/smithery-yaml
 
 name: context-fabric
-version: 0.5.3
+version: 0.5.4
 description: |
   MCP server for agentic CLI memory and time-aware orientation. Provides semantic
   context management across sessions with a three-layer memory architecture

@@ -176,7 +176,8 @@ describe('Config Module', () => {
     it('should have reasonable defaults', () => {
       const ttl = getTTLConfig();
       expect(ttl.l1Default).toBe(3600); // 1 hour
-      expect(ttl.l3DecayDays).toBe(30);
+      expect(ttl.l3DecayDays).toBe(14); // aggressive 14-day window (v0.5.4)
+      expect(ttl.l3DecayThreshold).toBe(0.2);
       expect(ttl.l3AccessThreshold).toBe(3);
     });
   });

@@ -1076,6 +1076,70 @@ export function handleRequest(req: Request): Response {
   });
 
   // ============================================================================
+  // Aggressive Decay (v0.5.4)
+  // ============================================================================
+
+  describe('aggressive decay', () => {
+    it('should default to l3DecayDays=14 and l3DecayThreshold=0.2', () => {
+      expect(engine.config.ttl.l3DecayDays).toBe(14);
+      expect(engine.config.ttl.l3DecayThreshold).toBe(0.2);
+    });
+
+    it.skipIf(!hasEmbeddingModel)('applyDecay deletes memories below the decay threshold', async () => {
+      const mem = await engine.store('decay-threshold-test', 'scratchpad', {
+        layer: MemoryLayer.L3_SEMANTIC,
+      });
+
+      // Simulate a memory that is 180 days old and unaccessed.
+      // applyDecay() recomputes score from timestamps (ignores stored relevance_score),
+      // so we must age the timestamps — not just overwrite the score column.
+      const veryOldTs = Date.now() - 180 * 24 * 60 * 60 * 1000;
+      const l3 = engine.l3 as any;
+      l3.db.prepare('UPDATE semantic_memories SET created_at = ?, accessed_at = ? WHERE id = ?')
+        .run(veryOldTs, veryOldTs, mem.id);
+
+      const pruned = await engine.l3.applyDecay();
+      expect(pruned).toBeGreaterThan(0);
+
+      const found = await engine.l3.get(mem.id);
+      expect(found).toBeUndefined();
+    });
+
+    it.skipIf(!hasEmbeddingModel)('applyDecay keeps memories above the decay threshold', async () => {
+      const mem = await engine.store('decay-survive-test', 'decision', {
+        layer: MemoryLayer.L3_SEMANTIC,
+      });
+
+      // A freshly created memory has age ≈ 0, so applyDecay() computes score ≈ 1.0 — no manipulation needed.
+      await engine.l3.applyDecay();
+
+      const found = await engine.l3.get(mem.id);
+      expect(found).toBeDefined();
+    });
+
+    it.skipIf(!hasEmbeddingModel)('orient fires decay in the background', async () => {
+      const mem = await engine.store('orient-decay-test', 'scratchpad', {
+        layer: MemoryLayer.L3_SEMANTIC,
+      });
+
+      // Age the memory far into the past so decay will delete it
+      const veryOldTs = Date.now() - 180 * 24 * 60 * 60 * 1000;
+      const l3 = engine.l3 as any;
+      l3.db.prepare('UPDATE semantic_memories SET created_at = ?, accessed_at = ? WHERE id = ?')
+        .run(veryOldTs, veryOldTs, mem.id);
+
+      // orient() triggers decay fire-and-forget
+      await engine.orient('UTC');
+
+      // Give the async decay a moment to resolve
+      await new Promise(r => setTimeout(r, 50));
+
+      const found = await engine.l3.get(mem.id);
+      expect(found).toBeUndefined();
+    });
+  });
+
+  // ============================================================================
   // Memory Weighting
   // ============================================================================
 

@@ -334,8 +334,9 @@ export interface FabricConfig {
   };
   ttl: {
     l1Default: number; // seconds (default: 1 hour)
-    l3DecayDays: number; // days (default: 30 days)
+    l3DecayDays: number; // days (default: 14 days)
     l3AccessThreshold: number; // min access count to persist
+    l3DecayThreshold: number; // relevance score below which a memory is deleted (default: 0.2)
   };
   embedding: {
     model: string;

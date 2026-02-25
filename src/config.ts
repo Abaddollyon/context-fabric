@@ -30,8 +30,9 @@ const DEFAULT_CONFIG: FabricConfig = {
   },
   ttl: {
     l1Default: 3600, // 1 hour in seconds
-    l3DecayDays: 30,
+    l3DecayDays: 14,
     l3AccessThreshold: 3,
+    l3DecayThreshold: 0.2,
   },
   embedding: {
     model: "Xenova/all-MiniLM-L6-v2",
@@ -73,9 +74,10 @@ storage:
   backupIntervalHours: 24
 
 ttl:
-  l1Default: 3600  # 1 hour in seconds
-  l3DecayDays: 30
+  l1Default: 3600       # 1 hour in seconds
+  l3DecayDays: 14       # L3 memories decay over 14 days (aggressive — use context.update pinned:true to exempt)
   l3AccessThreshold: 3
+  l3DecayThreshold: 0.2 # relevance score below which an L3 memory is deleted
 
 embedding:
   model: "Xenova/all-MiniLM-L6-v2"
