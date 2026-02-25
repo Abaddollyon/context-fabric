@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
+
+## [0.5.3] - 2026-02-25
+
+### Added
+- **Memory weighting** — new `weight` field (1–5, default 3) on memory metadata:
+  - `weight: 4–5` surfaces memories above unweighted ones in recall results and context window
+  - `weight: 1–2` deprioritises low-priority scratchpad notes
+  - `context.store` — accepts `metadata.weight` (validated integer 1–5, defaults to 3)
+  - `context.update` — accepts top-level `weight` param for convenient discoverability
+  - `context.recall` — applies `similarity × (weight / 3)` before ranking (weight 5 = 1.67×, weight 1 = 0.33×)
+  - `context.getCurrent` — applies the same factor to `relevanceScore` in the context window assembly
+
+### Design Decisions
+- Weight lives in the existing metadata JSON blob — no database schema change needed
+- Weight multiplier (not a hard filter) — weight-5 memories reliably outrank unweighted ones without guaranteeing inclusion regardless of similarity (pinned memories with a SQL-filterable column deferred to 0.5.5)
+- Scale: weight/3 keeps weight-3 (default) as a 1.0× neutral multiplier
 - Cross-project memory linking
 - Team/collaborative memory sharing
 - Memory compression for old entries

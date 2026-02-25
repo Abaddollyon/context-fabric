@@ -50,6 +50,8 @@ const StoreMemorySchema = z.object({
     source: z.enum(["user_explicit", "ai_inferred", "system_auto"]).default("ai_inferred"),
     projectPath: z.string().optional(),
     cliType: z.string().default("generic"),
+    weight: z.number().int().min(1).max(5).default(3)
+      .describe('Priority 1–5 (default 3). 4–5 surfaces above unweighted memories in recall and context window.'),
   }),
   ttl: z.number().int().positive().optional(),
 });
@@ -166,6 +168,8 @@ const UpdateMemorySchema = z.object({
   content: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),
   tags: z.array(z.string()).optional(),
+  weight: z.number().int().min(1).max(5).optional()
+    .describe('Update the memory weight (1–5)'),
   projectPath: z.string().optional(),
 });
 
@@ -244,6 +248,7 @@ const TOOLS: Tool[] = [
             source: { type: "string", enum: ["user_explicit", "ai_inferred", "system_auto"] },
             projectPath: { type: "string" },
             cliType: { type: "string" },
+            weight: { type: "number", description: "Priority 1–5 (default 3). 4–5 surfaces above unweighted memories in recall and context window." },
           },
         },
         ttl: { type: "number", description: "Time-to-live in seconds (for L1 memories)" },
@@ -451,6 +456,7 @@ const TOOLS: Tool[] = [
         content: { type: "string", description: "New content (optional)" },
         metadata: { type: "object", description: "Metadata fields to merge (optional)" },
         tags: { type: "array", items: { type: "string" }, description: "New tags array (replaces existing tags)" },
+        weight: { type: "number", description: "Update the memory weight (1–5)" },
         projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
       },
       required: ["memoryId"],
@@ -840,6 +846,9 @@ async function handleUpdateMemory(args: unknown): Promise<unknown> {
   if (params.content !== undefined) updates.content = params.content;
   if (params.metadata !== undefined) updates.metadata = params.metadata;
   if (params.tags !== undefined) updates.tags = params.tags;
+  if (params.weight !== undefined) {
+    updates.metadata = { ...updates.metadata, weight: params.weight };
+  }
 
   const result = await engine.updateMemory(params.memoryId, updates);
 

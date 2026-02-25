@@ -69,6 +69,8 @@ export interface MemoryMetadata {
   source: "user_explicit" | "ai_inferred" | "system_auto";
   projectPath?: string;
   cliType: string;
+  // 1–5, user-set priority. Default 3. Higher values rank above lower in recall and context window.
+  weight?: number;
   // Allow additional legacy fields
   [key: string]: unknown;
 }
