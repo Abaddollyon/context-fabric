@@ -350,4 +350,14 @@ export interface FabricConfig {
   cli: {
     defaultCapabilities: UserPreferences;
   };
+  codeIndex: {
+    enabled: boolean;
+    maxFileSizeBytes: number;
+    maxFiles: number;
+    chunkLines: number;
+    chunkOverlap: number;
+    debounceMs: number;
+    watchEnabled: boolean;
+    excludePatterns: string[];
+  };
 }

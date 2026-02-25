@@ -144,6 +144,18 @@ const SetupSchema = z.object({
   preview: z.boolean().default(false),
 });
 
+const SearchCodeSchema = z.object({
+  query: z.string().min(1),
+  mode: z.enum(["text", "symbol", "semantic"]).default("semantic"),
+  language: z.string().optional(),
+  filePattern: z.string().optional(),
+  symbolKind: z.enum(["function", "class", "interface", "type", "enum", "const", "export", "method"]).optional(),
+  limit: z.number().int().positive().default(10),
+  threshold: z.number().min(0).max(1).default(0.5),
+  includeContent: z.boolean().default(true),
+  projectPath: z.string().optional(),
+});
+
 // ============================================================================
 // Tool Definitions
 // ============================================================================
@@ -360,6 +372,34 @@ const TOOLS: Tool[] = [
           description: "Project path. Defaults to the current working directory.",
         },
       },
+    },
+  },
+  {
+    name: "context.searchCode",
+    description: "Search the project's source code index. Supports three modes: 'text' for full-text search across file contents, 'symbol' for finding functions/classes/types by name, and 'semantic' for natural-language similarity search using embeddings. The index is built automatically on first use and stays up-to-date via file watching.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query" },
+        mode: {
+          type: "string",
+          enum: ["text", "symbol", "semantic"],
+          description: "Search mode: 'text' for full-text, 'symbol' for symbol names, 'semantic' for embedding similarity. Default: semantic",
+          default: "semantic",
+        },
+        language: { type: "string", description: "Filter results to a specific language (e.g. 'typescript', 'python')" },
+        filePattern: { type: "string", description: "Glob pattern to filter files (e.g. 'src/**/*.ts')" },
+        symbolKind: {
+          type: "string",
+          enum: ["function", "class", "interface", "type", "enum", "const", "export", "method"],
+          description: "Filter symbols by kind (only used with mode='symbol')",
+        },
+        limit: { type: "number", default: 10, description: "Maximum results to return" },
+        threshold: { type: "number", default: 0.5, description: "Minimum similarity score for semantic search (0-1)" },
+        includeContent: { type: "boolean", default: true, description: "Include source content in results" },
+        projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
+      },
+      required: ["query"],
     },
   },
   {
@@ -638,6 +678,51 @@ async function handleOrient(args: unknown): Promise<unknown> {
   };
 }
 
+async function handleSearchCode(args: unknown): Promise<unknown> {
+  const params = SearchCodeSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  const codeIndex = engine.getCodeIndex();
+
+  // Ensure index is ready
+  await codeIndex.ensureReady();
+
+  const searchOpts = {
+    language: params.language,
+    filePattern: params.filePattern,
+    symbolKind: params.symbolKind,
+    limit: params.limit,
+    threshold: params.threshold,
+    includeContent: params.includeContent,
+  };
+
+  let results;
+  switch (params.mode) {
+    case 'text':
+      results = codeIndex.searchText(params.query, searchOpts);
+      break;
+    case 'symbol':
+      results = codeIndex.searchSymbols(params.query, searchOpts);
+      break;
+    case 'semantic':
+    default:
+      results = await codeIndex.searchSemantic(params.query, searchOpts);
+      break;
+  }
+
+  const status = codeIndex.getStatus();
+
+  return {
+    results,
+    indexStatus: {
+      totalFiles: status.totalFiles,
+      totalSymbols: status.totalSymbols,
+      lastIndexed: status.lastIndexedAt,
+      isStale: status.isStale,
+    },
+    total: results.length,
+  };
+}
+
 async function handleSetup(args: unknown): Promise<unknown> {
   const params = SetupSchema.parse(args);
   const cli = params.cli as SupportedCLI;
@@ -743,6 +828,9 @@ async function createServer(): Promise<Server> {
           break;
         case "context.orient":
           result = await handleOrient(args);
+          break;
+        case "context.searchCode":
+          result = await handleSearchCode(args);
           break;
         case "context.setup":
           result = await handleSetup(args);

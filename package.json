@@ -1,6 +1,6 @@
 {
   "name": "context-fabric",
-  "version": "0.4.0",
+  "version": "0.4.5",
   "description": "Persistent memory for AI coding agents. MCP server with semantic search, three-layer storage, and time-aware orientation.",
   "type": "module",
   "main": "dist/index.js",

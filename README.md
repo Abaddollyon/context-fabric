@@ -4,7 +4,7 @@
 
 **Persistent memory for AI coding agents.** Your agent remembers everything -- across sessions, projects, and tools.
 
-[![Version](https://img.shields.io/badge/version-0.4.0--beta-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
+[![Version](https://img.shields.io/badge/version-0.4.5--beta-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Node](https://img.shields.io/badge/node-22.5%2B-brightgreen?style=flat-square)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](Dockerfile)
@@ -28,13 +28,14 @@ Context Fabric is an [MCP](https://modelcontextprotocol.io/) server that gives y
 ## Features
 
 - **Three-layer memory** -- Working (L1), Project (L2), Semantic (L3). Memories auto-route to the right layer.
+- **Local code indexing** -- Scans source files, extracts symbols (functions/classes/types), and stays up-to-date via file watching. Search by text, symbol name, or semantic similarity.
 - **Semantic recall** -- Search by meaning using in-process vector embeddings. No API keys needed.
 - **Time-aware orientation** -- "What happened while I was away?" Offline gap detection, timezone support, session continuity.
 - **Ghost messages** -- Relevant memories surface silently without cluttering the conversation.
 - **Pattern detection** -- Auto-captures and reuses code patterns across projects.
 - **Self-installing** -- Ask your AI to run `context.setup` and it configures itself into any supported CLI.
 - **Docker-first** -- Cross-platform `docker run --rm -i`. No Node.js required on the host.
-- **11 MCP tools** -- Store, recall, orient, time, summarize, promote, ghost, patterns, events, setup.
+- **12 MCP tools** -- Store, recall, orient, time, summarize, promote, ghost, patterns, events, searchCode, setup.
 - **Zero external dependencies** -- All storage is SQLite. All search is local. Nothing leaves your machine.
 
 ## Supported CLIs
@@ -138,9 +139,10 @@ Memories auto-route to the right layer. Scratchpad notes go to L1 (ephemeral). D
 |----------|-------------|
 | [Getting Started](docs/getting-started.md) | Installation, first run, Docker and local setup |
 | [CLI Setup](docs/cli-setup.md) | Per-CLI configuration (all 7 supported CLIs) |
-| [Tools Reference](docs/tools-reference.md) | All 11 MCP tools with full parameter docs |
+| [Tools Reference](docs/tools-reference.md) | All 12 MCP tools with full parameter docs |
 | [Memory Types](docs/memory-types.md) | Type system, three layers, [smart routing](docs/memory-types.md#smart-router), [decay](docs/memory-types.md#decay-algorithm) |
 | [Configuration](docs/configuration.md) | Storage paths, TTL, embedding, environment variables |
+| [Agent Integration](docs/agent-integration.md) | System prompt instructions for automatic tool usage |
 | [Architecture](docs/architecture.md) | System internals, data flow, embedding strategy |
 | [Changelog](CHANGELOG.md) | Version history and migration notes |
 

@@ -34,7 +34,7 @@ graph TB
     end
 
     subgraph Server["Context Fabric MCP Server"]
-        TH["Tool Handlers\n11 MCP tools"]
+        TH["Tool Handlers\n12 MCP tools"]
         CE["Context Engine\nOrchestrator"]
         SR["Smart Router\ncontent → layer"]
         TS["Time Service\nIANA tz, anchors, gaps"]
@@ -472,4 +472,4 @@ flowchart TD
 
 ---
 
-[← Memory Types](memory-types.md) | [Configuration](configuration.md) | [Back to README](../README.md)
+[← Agent Integration](agent-integration.md) | [Configuration](configuration.md) | [Back to README](../README.md)

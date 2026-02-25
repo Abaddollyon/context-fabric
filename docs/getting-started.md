@@ -41,7 +41,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   | docker run --rm -i context-fabric
 ```
 
-You should see a JSON response listing all 11 MCP tools. For persistent storage (so memories survive container restarts), use a named volume:
+You should see a JSON response listing all 12 MCP tools. For persistent storage (so memories survive container restarts), use a named volume:
 
 ```bash
 docker run --rm -i \
@@ -112,7 +112,7 @@ Last session: 14 hours 23 minutes ago (since 6:52 PM yesterday).
 
 ## Verify Installation
 
-Send a `tools/list` request to confirm all 11 MCP tools are available:
+Send a `tools/list` request to confirm all 12 MCP tools are available:
 
 ```bash
 # Docker
@@ -127,7 +127,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
 ## Next Steps
 
 - **[CLI Setup](cli-setup.md)** — Configure Context Fabric for your specific CLI tool
-- **[Tools Reference](tools-reference.md)** — All 11 MCP tools with full parameter docs
+- **[Tools Reference](tools-reference.md)** — All 12 MCP tools with full parameter docs
 - **[Memory Types](memory-types.md)** — Understand the type system and three-layer architecture
 - **[Configuration](configuration.md)** — Customize storage paths, TTL, embedding, and more
 - **[Architecture](architecture.md)** — Deep dive into system internals

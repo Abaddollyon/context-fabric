@@ -3,6 +3,8 @@
  * Simulates a complete CLI session with context-fabric
  */
 
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { ContextEngine } from '../../src/engine.js';
 import { MemoryLayer, MemoryType, CLIEvent } from '../../src/types.js';
@@ -13,6 +15,11 @@ import {
   sleep,
   assertValidContextWindow,
 } from '../utils.js';
+
+/** Skip L3 tests when the ONNX embedding model isn't available (e.g. CI) */
+const hasEmbeddingModel = existsSync(
+  resolve('local_cache', 'fast-bge-small-en', 'tokenizer.json')
+);
 
 describe('End-to-End: CLI Session Flow', () => {
   let projectPath: string;
@@ -260,7 +267,7 @@ describe('End-to-End: CLI Session Flow', () => {
   // Step 5: Pattern learned -> L3 code_pattern
   // ============================================================================
   
-  describe('Step 5: Pattern Learning', () => {
+  describe.skipIf(!hasEmbeddingModel)('Step 5: Pattern Learning', () => {
     it('should handle pattern_detected event', async () => {
       const event: CLIEvent = {
         type: 'pattern_detected',
@@ -449,7 +456,7 @@ describe('End-to-End: CLI Session Flow', () => {
   
   describe('Cross-Layer Memory Recall', () => {
     it('should recall across all layers', async () => {
-      const results = await engine.recall('error handling', { limit: 20 });
+      const results = await engine.recall('TypeError', { limit: 20 });
       
       expect(results.length).toBeGreaterThan(0);
       
@@ -488,6 +495,89 @@ describe('End-to-End: CLI Session Flow', () => {
     });
   });
   
+  // ============================================================================
+  // Step 8: Code Index Search
+  // ============================================================================
+
+  describe('Step 8: Code Index', () => {
+    it('should build a code index and search by text', async () => {
+      const { writeFileSync, mkdirSync } = await import('fs');
+      const { join } = await import('path');
+      mkdirSync(join(projectPath, 'src/services'), { recursive: true });
+
+      writeFileSync(join(projectPath, 'src/services/auth.ts'), `
+export class AuthService {
+  verifyToken(token: string): boolean {
+    return token.startsWith('valid_');
+  }
+
+  createToken(userId: string): string {
+    return 'valid_' + userId;
+  }
+}
+`);
+
+      writeFileSync(join(projectPath, 'src/services/user.ts'), `
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export class UserService {
+  findById(id: string): User | undefined {
+    return undefined;
+  }
+}
+`);
+
+      const idx = engine.getCodeIndex();
+      await idx.reindexFile('src/services/auth.ts');
+      await idx.reindexFile('src/services/user.ts');
+
+      const textResults = idx.searchText('verifyToken');
+      expect(textResults.length).toBeGreaterThan(0);
+      expect(textResults[0].filePath).toContain('auth.ts');
+    });
+
+    it('should search by symbol across multiple files', async () => {
+      const idx = engine.getCodeIndex();
+
+      const classResults = idx.searchSymbols('', { symbolKind: 'class' });
+      expect(classResults.length).toBeGreaterThanOrEqual(2);
+
+      const names = classResults.map(r => r.symbol?.name);
+      expect(names).toContain('AuthService');
+      expect(names).toContain('UserService');
+    });
+
+    it('should find interfaces', async () => {
+      const idx = engine.getCodeIndex();
+
+      const ifaces = idx.searchSymbols('', { symbolKind: 'interface' });
+      expect(ifaces.some(r => r.symbol?.name === 'User')).toBe(true);
+    });
+
+    it('should return file symbols for a specific file', async () => {
+      const idx = engine.getCodeIndex();
+
+      const symbols = idx.getFileSymbols('src/services/auth.ts');
+      const names = symbols.map(s => s.name);
+      expect(names).toContain('AuthService');
+      expect(names).toContain('verifyToken');
+      expect(names).toContain('createToken');
+    });
+
+    it('should report index status', async () => {
+      const idx = engine.getCodeIndex();
+      const status = idx.getStatus();
+
+      expect(status.totalFiles).toBe(2);
+      expect(status.totalSymbols).toBeGreaterThan(0);
+      expect(status.totalChunks).toBeGreaterThan(0);
+    });
+  });
+
   // ============================================================================
   // Session End
   // ============================================================================
@@ -583,7 +673,7 @@ describe('End-to-End: CLI Session Flow', () => {
       // All operations completed successfully
     });
     
-    it('should support memory promotion workflow', async () => {
+    it.skipIf(!hasEmbeddingModel)('should support memory promotion workflow', async () => {
       // Create a working memory that turns out to be important
       const workingMem = await engine.store(
         'Important insight about performance',
