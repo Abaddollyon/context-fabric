@@ -22,7 +22,6 @@ interface SemanticMemoryOptions {
   baseDir?: string;
   decayDays?: number;
   collectionName?: string; // kept for API compat, unused
-  chromaUrl?: string;      // kept for API compat, unused
   isEphemeral?: boolean;   // if true, use in-memory SQLite
 }
 
@@ -58,6 +57,10 @@ export class SemanticMemoryLayer {
   private stmtDelete!: StatementSync;
   private stmtCount!: StatementSync;
   private stmtGetEmbedding!: StatementSync;
+  private stmtGetAllPaginated!: StatementSync;
+  private stmtUpdateFull!: StatementSync;
+  private stmtFindByType!: StatementSync;
+  private stmtCountByType!: StatementSync;
 
   constructor(options: SemanticMemoryOptions = {}) {
     this.decayDays = options.decayDays ?? 30;
@@ -119,6 +122,24 @@ export class SemanticMemoryLayer {
     this.stmtDelete = this.db.prepare('DELETE FROM semantic_memories WHERE id = ?');
     this.stmtCount = this.db.prepare('SELECT COUNT(*) as count FROM semantic_memories');
     this.stmtGetEmbedding = this.db.prepare('SELECT embedding FROM semantic_memories WHERE id = ?');
+
+    this.stmtGetAllPaginated = this.db.prepare(
+      'SELECT * FROM semantic_memories ORDER BY relevance_score DESC LIMIT ? OFFSET ?'
+    );
+
+    this.stmtUpdateFull = this.db.prepare(`
+      UPDATE semantic_memories
+      SET content = ?, metadata = ?, tags = ?, embedding = ?, updated_at = ?
+      WHERE id = ?
+    `);
+
+    this.stmtFindByType = this.db.prepare(
+      'SELECT * FROM semantic_memories WHERE type = ? ORDER BY relevance_score DESC LIMIT ? OFFSET ?'
+    );
+
+    this.stmtCountByType = this.db.prepare(
+      'SELECT COUNT(*) as count FROM semantic_memories WHERE type = ?'
+    );
   }
 
   /** Store a memory along with its computed embedding vector. */
@@ -269,8 +290,110 @@ export class SemanticMemoryLayer {
     return true;
   }
 
+  /** Update a memory. Re-embeds only if content changed. */
+  async update(id: string, updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[] }): Promise<Memory> {
+    const row = this.stmtGetById.get(id) as DbRow | undefined;
+    if (!row) throw new Error(`Memory not found: ${id}`);
+
+    const now = Date.now();
+    const newContent = updates.content ?? row.content;
+    const contentChanged = updates.content !== undefined && updates.content !== row.content;
+
+    let existingMeta: Record<string, unknown> = {};
+    try { existingMeta = JSON.parse(row.metadata); } catch (err) {
+      console.error('[ContextFabric] Corrupted metadata in memory', id, err);
+    }
+    const newMetadata = updates.metadata !== undefined
+      ? { ...existingMeta, ...updates.metadata }
+      : existingMeta;
+
+    let existingTags: string[] = [];
+    try { existingTags = JSON.parse(row.tags); } catch (err) {
+      console.error('[ContextFabric] Corrupted tags in memory', id, err);
+    }
+    const newTags = updates.tags ?? existingTags;
+
+    // Re-embed only if content changed
+    let embeddingJson = row.embedding;
+    if (contentChanged) {
+      const embedding = await this.embedder.embed(newContent);
+      embeddingJson = JSON.stringify(embedding);
+    }
+
+    this.stmtUpdateFull.run(
+      newContent,
+      JSON.stringify(newMetadata),
+      JSON.stringify(newTags),
+      embeddingJson,
+      now,
+      id,
+    );
+
+    return {
+      id: row.id,
+      type: row.type as MemoryType,
+      content: newContent,
+      metadata: newMetadata as MemoryMetadata,
+      tags: newTags,
+      createdAt: row.created_at,
+      updatedAt: now,
+      accessCount: row.access_count,
+      lastAccessedAt: row.accessed_at,
+    };
+  }
+
+  /** Paginated list of all memories, ordered by relevance_score DESC. */
+  async getAll(limit = 100, offset = 0): Promise<Memory[]> {
+    const rows = this.stmtGetAllPaginated.all(limit, offset) as unknown as DbRow[];
+    return rows.map((row) => this.rowToMemory(row));
+  }
+
   async count(): Promise<number> {
     const row = this.stmtCount.get() as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  /** Find memories by type with pagination. */
+  findByType(type: string, limit: number, offset: number): Memory[] {
+    const rows = this.stmtFindByType.all(type, limit, offset) as unknown as DbRow[];
+    return rows.map(row => this.rowToMemory(row));
+  }
+
+  /** Find memories that have ANY of the given tags (OR logic) with pagination. */
+  findByTags(tags: string[], limit: number, offset: number): Memory[] {
+    if (tags.length === 0) return [];
+
+    // semantic_memories stores tags as a JSON array in the tags column.
+    // Build a WHERE clause that checks for each tag with JSON_EACH.
+    const conditions = tags.map(() => `EXISTS (SELECT 1 FROM json_each(sm.tags) WHERE json_each.value = ?)`).join(' OR ');
+    const stmt = this.db.prepare(`
+      SELECT sm.* FROM semantic_memories sm
+      WHERE ${conditions}
+      ORDER BY sm.relevance_score DESC
+      LIMIT ? OFFSET ?
+    `);
+
+    const rows = stmt.all(...tags, limit, offset) as unknown as DbRow[];
+    return rows.map(row => this.rowToMemory(row));
+  }
+
+  /** Count memories by type. */
+  countByType(type: string): number {
+    const row = this.stmtCountByType.get(type) as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  /** Count memories that have ANY of the given tags (OR logic). */
+  countByTags(tags: string[]): number {
+    if (tags.length === 0) return 0;
+
+    const conditions = tags.map(() => `EXISTS (SELECT 1 FROM json_each(sm.tags) WHERE json_each.value = ?)`).join(' OR ');
+    const stmt = this.db.prepare(`
+      SELECT COUNT(*) as count FROM semantic_memories sm
+      WHERE ${conditions}
+    `);
+
+    const row = stmt.get(...tags) as { count: number } | undefined;
     return row?.count ?? 0;
   }
 
@@ -303,10 +426,14 @@ export class SemanticMemoryLayer {
 
   private rowToMemory(row: DbRow): Memory {
     let metadata: Record<string, unknown> = {};
-    try { metadata = JSON.parse(row.metadata); } catch { /* empty */ }
+    try { metadata = JSON.parse(row.metadata); } catch (err) {
+      console.error('[ContextFabric] Corrupted metadata in memory', row.id, err);
+    }
 
     let tags: string[] = [];
-    try { tags = JSON.parse(row.tags); } catch { /* empty */ }
+    try { tags = JSON.parse(row.tags); } catch (err) {
+      console.error('[ContextFabric] Corrupted tags in memory', row.id, err);
+    }
 
     return {
       id: row.id,

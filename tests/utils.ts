@@ -1,6 +1,6 @@
 /**
  * Test utilities for context-fabric
- * Provides setup/cleanup helpers, mock data generators, and ChromaDB test helpers
+ * Provides setup/cleanup helpers, mock data generators, and test helpers
  */
 
 import * as fs from 'fs';

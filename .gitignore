@@ -40,6 +40,9 @@ coverage/
 *.swo
 *~
 
+# Local AI agent config (personal, not project-level)
+CLAUDE.md
+
 # OS
 .DS_Store
 Thumbs.db

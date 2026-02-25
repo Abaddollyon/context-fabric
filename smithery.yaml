@@ -2,7 +2,7 @@
 # https://smithery.ai/docs/registry/smithery-yaml
 
 name: context-fabric
-version: 0.4.0
+version: 0.5.2
 description: |
   MCP server for agentic CLI memory and time-aware orientation. Provides semantic
   context management across sessions with a three-layer memory architecture
@@ -88,6 +88,21 @@ tools:
 
   - name: context.promote
     description: Promote a memory to a higher layer (L1→L2, L2→L3) to increase its persistence and scope.
+
+  - name: context.searchCode
+    description: Search the project's source code index. Supports text, symbol, and semantic search modes. Index is built automatically on first use.
+
+  - name: context.get
+    description: Get a specific memory by its ID. Searches across all layers (L1→L2→L3).
+
+  - name: context.update
+    description: Update an existing memory's content, metadata, or tags. L3 memories are re-embedded only if content changes.
+
+  - name: context.delete
+    description: Delete a memory by its ID. Searches across all layers and deletes from whichever layer it lives in.
+
+  - name: context.list
+    description: List and browse memories with optional filters (type, tags). Supports pagination. Defaults to L2 (project) memories.
 
   - name: context.setup
     description: Install and configure Context Fabric into any supported CLI's MCP config. Writes the config file automatically. Supports local (node) and Docker transports.

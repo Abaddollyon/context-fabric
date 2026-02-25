@@ -35,6 +35,9 @@ export class ProjectMemoryLayer {
   private stmtGetSince!: StatementSync;
   private stmtGetMeta!: StatementSync;
   private stmtUpsertMeta!: StatementSync;
+  private stmtCount!: StatementSync;
+  private stmtFindByTypePaginated!: StatementSync;
+  private stmtCountByType!: StatementSync;
 
   constructor(projectPath: string, baseDir?: string) {
     this.projectPath = path.resolve(projectPath);
@@ -148,6 +151,16 @@ export class ProjectMemoryLayer {
       INSERT INTO project_meta (key, value, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
     `);
+
+    this.stmtCount = this.db.prepare('SELECT COUNT(*) as count FROM memories');
+
+    this.stmtFindByTypePaginated = this.db.prepare(
+      'SELECT * FROM memories WHERE type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
+    );
+
+    this.stmtCountByType = this.db.prepare(
+      'SELECT COUNT(*) as count FROM memories WHERE type = ?'
+    );
   }
 
   /** No-op — node:sqlite is synchronous, so the layer is always ready. */
@@ -284,6 +297,56 @@ export class ProjectMemoryLayer {
 
   async getRecent(limit = 10): Promise<Memory[]> {
     return this.getAll(limit, 0);
+  }
+
+  /** Find memories by type with pagination. */
+  findByTypePaginated(type: MemoryType, limit: number, offset: number): Memory[] {
+    const rows = this.stmtFindByTypePaginated.all(type, limit, offset) as DatabaseRow[];
+    return rows.map(r => this.rowToMemory(r));
+  }
+
+  /** Find memories that have ANY of the given tags (OR logic) with pagination. */
+  findByTagsPaginated(tags: string[], limit: number, offset: number): Memory[] {
+    if (tags.length === 0) return [];
+
+    const placeholders = tags.map(() => '?').join(',');
+    const stmt = this.db.prepare(`
+      SELECT DISTINCT m.* FROM memories m
+      INNER JOIN memory_tags mt ON m.id = mt.memory_id
+      WHERE mt.tag IN (${placeholders})
+      ORDER BY m.created_at DESC
+      LIMIT ? OFFSET ?
+    `);
+
+    const rows = stmt.all(...tags, limit, offset) as DatabaseRow[];
+    return rows.map(r => this.rowToMemory(r));
+  }
+
+  /** Count memories by type. */
+  countByType(type: MemoryType): number {
+    const row = this.stmtCountByType.get(type) as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  /** Count memories that have ANY of the given tags (OR logic). */
+  countByTags(tags: string[]): number {
+    if (tags.length === 0) return 0;
+
+    const placeholders = tags.map(() => '?').join(',');
+    const stmt = this.db.prepare(`
+      SELECT COUNT(DISTINCT m.id) as count FROM memories m
+      INNER JOIN memory_tags mt ON m.id = mt.memory_id
+      WHERE mt.tag IN (${placeholders})
+    `);
+
+    const row = stmt.get(...tags) as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  /** Return the total number of memories in this project. */
+  count(): number {
+    const row = this.stmtCount.get() as { count: number } | undefined;
+    return row?.count ?? 0;
   }
 
   /**

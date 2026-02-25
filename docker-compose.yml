@@ -1,56 +1,20 @@
-version: '3.8'
-
 services:
   context-fabric:
-    build: 
-      context: .
-      target: production
+    build: .
     container_name: context-fabric
     volumes:
-      - ~/.context-fabric:/root/.context-fabric
+      - context-fabric-data:/data/.context-fabric
     environment:
-      - CHROMA_URL=http://chroma:8000
       - NODE_ENV=production
-      - CONTEXT_FABRIC_DIR=/root/.context-fabric
-    depends_on:
-      chroma:
-        condition: service_healthy
-    networks:
-      - context-fabric-network
+      - CONTEXT_FABRIC_DIR=/data/.context-fabric
     restart: unless-stopped
-    # Health check
     healthcheck:
-      test: ["CMD", "bun", "--version"]
+      test: ["CMD", "node", "--version"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 10s
 
-  chroma:
-    image: chromadb/chroma:latest
-    container_name: context-fabric-chroma
-    ports:
-      - "8000:8000"
-    volumes:
-      - chroma-data:/chroma/chroma
-    environment:
-      - IS_PERSISTENT=TRUE
-      - PERSIST_DIRECTORY=/chroma/chroma
-      - ANONYMIZED_TELEMETRY=FALSE
-    networks:
-      - context-fabric-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
-
 volumes:
-  chroma-data:
+  context-fabric-data:
     driver: local
-
-networks:
-  context-fabric-network:
-    driver: bridge

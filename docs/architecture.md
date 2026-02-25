@@ -34,7 +34,7 @@ graph TB
     end
 
     subgraph Server["Context Fabric MCP Server"]
-        TH["Tool Handlers\n12 MCP tools"]
+        TH["Tool Handlers\n16 MCP tools"]
         CE["Context Engine\nOrchestrator"]
         SR["Smart Router\ncontent → layer"]
         TS["Time Service\nIANA tz, anchors, gaps"]

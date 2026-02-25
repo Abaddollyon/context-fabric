@@ -9,7 +9,7 @@ Context Fabric exposes its tools via MCP, but your AI agent needs instructions t
 
 ## How It Works
 
-When Context Fabric is connected to a CLI tool, the AI sees 12 MCP tools in its available tool list (e.g. `context.orient`, `context.store`, `context.searchCode`). Each tool has a description that hints at when to use it, but AI agents work best when given explicit guidance in their system prompt or project-level config.
+When Context Fabric is connected to a CLI tool, the AI sees 16 MCP tools in its available tool list (e.g. `context.orient`, `context.store`, `context.searchCode`). Each tool has a description that hints at when to use it, but AI agents work best when given explicit guidance in their system prompt or project-level config.
 
 The integration model:
 
@@ -115,12 +115,18 @@ When should the agent call each tool? Here's the full mapping:
 | `context.promote` | To move a working memory to permanent storage | Occasionally |
 | `context.setup` | To install Context Fabric in another CLI tool | Once |
 | `context.getCurrent` | To get the full context window (working + relevant + patterns) | Rarely (orient is preferred) |
+| `context.get` | To retrieve a specific memory by ID | As needed |
+| `context.update` | To correct or expand a stored memory | As needed |
+| `context.delete` | To remove an outdated or incorrect memory | As needed |
+| `context.list` | To browse and audit the memory store | Occasionally |
 
 ---
 
 ## Example: Claude Code
 
-Add this to your project's `CLAUDE.md`:
+The project ships a `CLAUDE.md` at the repo root with full integration instructions. When Claude Code opens the project, it reads this file automatically and uses all 16 tools without any manual prompting.
+
+If you want to replicate this in your own project, create a `CLAUDE.md`:
 
 ```markdown
 ## Context Fabric
@@ -128,11 +134,18 @@ Add this to your project's `CLAUDE.md`:
 - At session start, call `context.orient` to ground yourself in time and project context.
 - Use `context.searchCode` with mode "symbol" to find functions and classes by name.
 - Use `context.recall` before making changes to check for relevant prior decisions.
-- Store important decisions with `context.store` (type: "decision").
+- Store important decisions with `context.store` (type: "decision") including rationale.
 - Store bug fixes with `context.store` (type: "bug_fix") including root cause.
+- Use `context.list` and `context.delete` to keep the memory store clean over time.
 ```
 
 After adding this, start a new Claude Code session. The agent will call `context.orient` first thing and use the other tools as the session progresses.
+
+### A note on ghost injection in Claude Code
+
+`context.getCurrent` and `context.ghost` return a `ghostMessages` array — memories surfaced as `role: system, isVisible: false` messages. In a **custom agent loop** these would be silently prepended to the system prompt before the LLM sees anything, making them truly invisible to the user.
+
+In Claude Code, MCP tool results are visible in the conversation as tool output. The ghost messages still reach the agent and inform its responses, but they are not truly hidden from the user. For full invisible injection, you need a custom integration layer that calls `getCurrent` before each turn and injects the `ghostMessages` into the system prompt directly.
 
 ---
 

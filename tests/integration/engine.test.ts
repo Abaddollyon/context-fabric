@@ -95,7 +95,7 @@ describe('ContextEngine Integration', () => {
       expect(memory.id).toBeDefined();
       expect(memory.layer).toBe(MemoryLayer.L3_SEMANTIC);
 
-      // Give ChromaDB time to index
+      // Give L3 time to index
       await sleep(100);
 
       // Verify it can be retrieved via semantic search
@@ -892,6 +892,186 @@ export function handleRequest(req: Request): Response {
       const idx = engine.getCodeIndex();
       expect(idx).toBeDefined();
       // close() is called by afterEach — just verify getCodeIndex works before close
+    });
+  });
+
+  // ============================================================================
+  // Memory CRUD
+  // ============================================================================
+
+  describe('getMemory', () => {
+    it('should get a memory from L1', async () => {
+      const mem = await engine.store('L1 note', 'scratchpad', { layer: MemoryLayer.L1_WORKING });
+      const result = await engine.getMemory(mem.id);
+
+      expect(result).not.toBeNull();
+      expect(result!.layer).toBe(MemoryLayer.L1_WORKING);
+      expect(result!.memory.content).toBe('L1 note');
+    });
+
+    it('should get a memory from L2', async () => {
+      const mem = await engine.store('L2 decision', 'decision', { layer: MemoryLayer.L2_PROJECT });
+      const result = await engine.getMemory(mem.id);
+
+      expect(result).not.toBeNull();
+      expect(result!.layer).toBe(MemoryLayer.L2_PROJECT);
+      expect(result!.memory.content).toBe('L2 decision');
+    });
+
+    it.skipIf(!hasEmbeddingModel)('should get a memory from L3', async () => {
+      const mem = await engine.store('L3 pattern', 'code_pattern', { layer: MemoryLayer.L3_SEMANTIC });
+      const result = await engine.getMemory(mem.id);
+
+      expect(result).not.toBeNull();
+      expect(result!.layer).toBe(MemoryLayer.L3_SEMANTIC);
+      expect(result!.memory.content).toBe('L3 pattern');
+    });
+
+    it('should return null for non-existent memory', async () => {
+      const result = await engine.getMemory('non-existent-id');
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('updateMemory', () => {
+    it('should update L2 memory content', async () => {
+      const mem = await engine.store('Original content', 'decision', { layer: MemoryLayer.L2_PROJECT });
+      const result = await engine.updateMemory(mem.id, { content: 'Updated content' });
+
+      expect(result.memory.content).toBe('Updated content');
+      expect(result.layer).toBe(MemoryLayer.L2_PROJECT);
+    });
+
+    it('should update L2 memory tags', async () => {
+      const mem = await engine.store('Tagged note', 'decision', { layer: MemoryLayer.L2_PROJECT, tags: ['old'] });
+      const result = await engine.updateMemory(mem.id, { tags: ['new', 'updated'] });
+
+      expect(result.memory.tags).toEqual(['new', 'updated']);
+    });
+
+    it('should update L2 memory metadata', async () => {
+      const mem = await engine.store('Meta note', 'decision', { layer: MemoryLayer.L2_PROJECT });
+      const result = await engine.updateMemory(mem.id, { metadata: { title: 'New Title' } });
+
+      expect(result.memory.metadata?.title).toBe('New Title');
+    });
+
+    it('should reject L1 memory updates', async () => {
+      const mem = await engine.store('Ephemeral', 'scratchpad', { layer: MemoryLayer.L1_WORKING });
+
+      await expect(
+        engine.updateMemory(mem.id, { content: 'Updated' })
+      ).rejects.toThrow('Cannot update L1');
+    });
+
+    it.skipIf(!hasEmbeddingModel)('should update L3 memory content', async () => {
+      const mem = await engine.store('Original L3', 'code_pattern', { layer: MemoryLayer.L3_SEMANTIC });
+      const result = await engine.updateMemory(mem.id, { content: 'Updated L3 content' });
+
+      expect(result.memory.content).toBe('Updated L3 content');
+      expect(result.layer).toBe(MemoryLayer.L3_SEMANTIC);
+    });
+
+    it.skipIf(!hasEmbeddingModel)('should update L3 tags without re-embedding', async () => {
+      const mem = await engine.store('L3 with tags', 'code_pattern', { layer: MemoryLayer.L3_SEMANTIC });
+      const result = await engine.updateMemory(mem.id, { tags: ['new-tag'] });
+
+      expect(result.memory.tags).toEqual(['new-tag']);
+      expect(result.layer).toBe(MemoryLayer.L3_SEMANTIC);
+    });
+
+    it('should throw for non-existent memory', async () => {
+      await expect(
+        engine.updateMemory('non-existent', { content: 'x' })
+      ).rejects.toThrow('Memory not found');
+    });
+  });
+
+  describe('deleteMemory', () => {
+    it('should delete from L1', async () => {
+      const mem = await engine.store('Delete me', 'scratchpad', { layer: MemoryLayer.L1_WORKING });
+      const result = await engine.deleteMemory(mem.id);
+
+      expect(result.deletedFrom).toBe(MemoryLayer.L1_WORKING);
+      expect(engine.l1.get(mem.id)).toBeUndefined();
+    });
+
+    it('should delete from L2', async () => {
+      const mem = await engine.store('Delete L2', 'decision', { layer: MemoryLayer.L2_PROJECT });
+      const result = await engine.deleteMemory(mem.id);
+
+      expect(result.deletedFrom).toBe(MemoryLayer.L2_PROJECT);
+      const found = await engine.l2.get(mem.id);
+      expect(found).toBeUndefined();
+    });
+
+    it.skipIf(!hasEmbeddingModel)('should delete from L3', async () => {
+      const mem = await engine.store('Delete L3', 'code_pattern', { layer: MemoryLayer.L3_SEMANTIC });
+      const result = await engine.deleteMemory(mem.id);
+
+      expect(result.deletedFrom).toBe(MemoryLayer.L3_SEMANTIC);
+      const found = await engine.l3.get(mem.id);
+      expect(found).toBeUndefined();
+    });
+
+    it('should throw for non-existent memory', async () => {
+      await expect(
+        engine.deleteMemory('non-existent')
+      ).rejects.toThrow('Memory not found');
+    });
+  });
+
+  describe('listMemories', () => {
+    it('should list L2 memories with pagination', async () => {
+      for (let i = 0; i < 5; i++) {
+        await engine.store(`Decision ${i}`, 'decision', { layer: MemoryLayer.L2_PROJECT });
+      }
+
+      const page1 = await engine.listMemories({ limit: 3, offset: 0 });
+      expect(page1.memories).toHaveLength(3);
+      expect(page1.total).toBe(5);
+
+      const page2 = await engine.listMemories({ limit: 3, offset: 3 });
+      expect(page2.memories).toHaveLength(2);
+      expect(page2.total).toBe(5);
+    });
+
+    it('should default to L2', async () => {
+      await engine.store('L2 mem', 'decision', { layer: MemoryLayer.L2_PROJECT });
+      const result = await engine.listMemories({});
+      expect(result.memories.length).toBeGreaterThan(0);
+    });
+
+    it('should filter by type', async () => {
+      await engine.store('A decision', 'decision', { layer: MemoryLayer.L2_PROJECT });
+      await engine.store('A bug fix', 'bug_fix', { layer: MemoryLayer.L2_PROJECT });
+
+      const result = await engine.listMemories({ type: 'decision' });
+      expect(result.memories.every(m => m.type === 'decision')).toBe(true);
+    });
+
+    it('should filter by tags', async () => {
+      await engine.store('Tagged', 'decision', { layer: MemoryLayer.L2_PROJECT, tags: ['arch'] });
+      await engine.store('Untagged', 'decision', { layer: MemoryLayer.L2_PROJECT, tags: ['other'] });
+
+      const result = await engine.listMemories({ tags: ['arch'] });
+      for (const m of result.memories) {
+        const mTags = m.tags || m.metadata?.tags || [];
+        expect(mTags).toContain('arch');
+      }
+    });
+
+    it('should list L1 memories', async () => {
+      await engine.store('L1 scratchpad', 'scratchpad', { layer: MemoryLayer.L1_WORKING });
+      const result = await engine.listMemories({ layer: MemoryLayer.L1_WORKING });
+      expect(result.memories.length).toBeGreaterThan(0);
+    });
+
+    it.skipIf(!hasEmbeddingModel)('should list L3 memories', async () => {
+      await engine.store('L3 pattern', 'code_pattern', { layer: MemoryLayer.L3_SEMANTIC });
+      const result = await engine.listMemories({ layer: MemoryLayer.L3_SEMANTIC });
+      expect(result.memories.length).toBeGreaterThan(0);
+      expect(result.total).toBeGreaterThan(0);
     });
   });
 
