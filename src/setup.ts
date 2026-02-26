@@ -161,7 +161,8 @@ function readJsonConfig(configPath: string): Record<string, unknown> | null {
   if (!fs.existsSync(configPath)) return {};
   try {
     return JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  } catch {
+  } catch (err) {
+    console.warn('[ContextFabric] Failed to parse config file, treating as unreadable:', configPath, err);
     return null;
   }
 }

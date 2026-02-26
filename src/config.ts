@@ -38,6 +38,7 @@ const DEFAULT_CONFIG: FabricConfig = {
     model: "Xenova/all-MiniLM-L6-v2",
     dimension: 384,
     batchSize: 32,
+    timeoutMs: 30_000, // 30 seconds — prevents ONNX from hanging the MCP process
   },
   context: {
     maxWorkingMemories: 10,
@@ -83,6 +84,7 @@ embedding:
   model: "Xenova/all-MiniLM-L6-v2"
   dimension: 384
   batchSize: 32
+  timeoutMs: 30000    # max ms for a single embed() call — prevents ONNX hangs
 
 context:
   maxWorkingMemories: 10

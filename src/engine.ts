@@ -133,6 +133,7 @@ export class ContextEngine {
       baseDir: storagePaths.l3Path,
       decayDays: this.config.ttl.l3DecayDays,
       decayThreshold: this.config.ttl.l3DecayThreshold,
+      embeddingTimeoutMs: this.config.embedding.timeoutMs,
       collectionName: 'semantic_memories',
       isEphemeral: options.isEphemeral,
     });
@@ -706,6 +707,33 @@ export class ContextEngine {
     }
 
     throw new Error(`Invalid layer: ${layer}`);
+  }
+
+  async getStats(): Promise<{
+    l1: { count: number };
+    l2: { count: number; pinned: number; byType: Record<string, number> };
+    l3: { count: number; pinned: number };
+    total: number;
+  }> {
+    const MEMORY_TYPES = ['code_pattern', 'bug_fix', 'decision', 'convention', 'scratchpad', 'relationship'] as const;
+
+    const l1Count = this.l1.size();
+    const l2Count = this.l2.count();
+    const l2Pinned = this.l2.countPinned();
+    const l2ByType: Record<string, number> = {};
+    for (const type of MEMORY_TYPES) {
+      const n = this.l2.countByType(type);
+      if (n > 0) l2ByType[type] = n;
+    }
+    const l3Count = await this.l3.count();
+    const l3Pinned = await this.l3.countPinned();
+
+    return {
+      l1: { count: l1Count },
+      l2: { count: l2Count, pinned: l2Pinned, byType: l2ByType },
+      l3: { count: l3Count, pinned: l3Pinned },
+      total: l1Count + l2Count + l3Count,
+    };
   }
 
   /**

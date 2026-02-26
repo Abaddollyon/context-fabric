@@ -135,11 +135,15 @@ export class CodeIndex {
         debounceMs: this.config.debounceMs,
         onChanged: (relPath) => {
           if (isIndexableExtension(relPath)) {
-            this.reindexFile(relPath).catch(() => {/* non-critical */});
+            this.reindexFile(relPath).catch((err: unknown) => {
+              console.warn('[ContextFabric] reindexFile failed for changed file:', relPath, err);
+            });
           }
         },
         onDeleted: (relPath) => {
-          try { this.stmtDeleteFile.run(relPath); } catch {/* ignore */}
+          try { this.stmtDeleteFile.run(relPath); } catch (err) {
+            console.warn('[ContextFabric] stmtDeleteFile failed for deleted file:', relPath, err);
+          }
         },
       });
       this.watcher.start();
@@ -251,7 +255,8 @@ export class CodeIndex {
       let embedding: number[];
       try {
         embedding = JSON.parse(row.embedding);
-      } catch {
+      } catch (err) {
+        console.warn('[ContextFabric] Corrupted embedding in code index, skipping chunk:', row.file_path, err);
         continue;
       }
 
@@ -292,8 +297,9 @@ export class CodeIndex {
     let content: string;
     try {
       content = readFileSync(fullPath, 'utf-8');
-    } catch {
-      return; // can't read → skip
+    } catch (err) {
+      console.warn('[ContextFabric] Could not read file for indexing, skipping:', relativePath, err);
+      return;
     }
 
     const language = detectLanguage(relativePath);
@@ -317,8 +323,8 @@ export class CodeIndex {
       try {
         const chunkTexts = chunks.map(c => c.header + c.content);
         embeddings = await this.embeddingService.embedBatch(chunkTexts);
-      } catch {
-        // Embedding failed — store chunks without embeddings
+      } catch (err) {
+        console.warn('[ContextFabric] Embedding batch failed for', relativePath, '— storing chunks without embeddings:', err);
         embeddings = chunks.map(() => []);
       }
     } else {

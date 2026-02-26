@@ -22,6 +22,7 @@ interface SemanticMemoryOptions {
   baseDir?: string;
   decayDays?: number;
   decayThreshold?: number; // relevance score below which a memory is deleted (default: 0.2)
+  embeddingTimeoutMs?: number; // max ms for a single embed call (default: 30000)
   collectionName?: string; // kept for API compat, unused
   isEphemeral?: boolean;   // if true, use in-memory SQLite
 }
@@ -64,6 +65,7 @@ export class SemanticMemoryLayer {
   private stmtFindByType!: StatementSync;
   private stmtCountByType!: StatementSync;
   private stmtSetPinned!: StatementSync;
+  private stmtCountPinned!: StatementSync;
 
   constructor(options: SemanticMemoryOptions = {}) {
     this.decayDays = options.decayDays ?? 14;
@@ -80,7 +82,7 @@ export class SemanticMemoryLayer {
 
     this.initSchema();
     this.prepareStatements();
-    this.embedder = new EmbeddingService();
+    this.embedder = new EmbeddingService(undefined, options.embeddingTimeoutMs ?? 30_000);
   }
 
   private initSchema(): void {
@@ -154,6 +156,7 @@ export class SemanticMemoryLayer {
     );
 
     this.stmtSetPinned = this.db.prepare('UPDATE semantic_memories SET pinned = ? WHERE id = ?');
+    this.stmtCountPinned = this.db.prepare('SELECT COUNT(*) as count FROM semantic_memories WHERE pinned = 1');
   }
 
   /** Store a memory along with its computed embedding vector. */
@@ -377,6 +380,11 @@ export class SemanticMemoryLayer {
 
   async count(): Promise<number> {
     const row = this.stmtCount.get() as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  async countPinned(): Promise<number> {
+    const row = this.stmtCountPinned.get() as { count: number } | undefined;
     return row?.count ?? 0;
   }
 

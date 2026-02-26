@@ -128,9 +128,11 @@ export class EventHandler {
     // Fire-and-forget code index update for this file
     try {
       const idx = this.engine.getCodeIndex();
-      idx.reindexFile(path).catch(() => {/* non-critical */});
-    } catch {
-      /* non-critical */
+      idx.reindexFile(path).catch((err: unknown) => {
+        console.warn('[ContextFabric] reindexFile fire-and-forget failed:', err);
+      });
+    } catch (err) {
+      console.warn('[ContextFabric] getCodeIndex() failed during file_opened event:', err);
     }
 
     return {
