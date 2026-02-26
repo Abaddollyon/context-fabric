@@ -191,6 +191,10 @@ const ListMemoriesSchema = z.object({
   projectPath: z.string().optional(),
 });
 
+const StatsSchema = z.object({
+  projectPath: z.string().optional(),
+});
+
 // ============================================================================
 // Tool Definitions
 // ============================================================================
@@ -495,6 +499,16 @@ const TOOLS: Tool[] = [
         tags: { type: "array", items: { type: "string" }, description: "Filter by tags (OR logic)" },
         limit: { type: "number", default: 20, description: "Maximum results to return (default: 20)" },
         offset: { type: "number", default: 0, description: "Offset for pagination (default: 0)" },
+        projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
+      },
+    },
+  },
+  {
+    name: "context.stats",
+    description: "Get a summary of the memory store: total counts per layer, pinned counts, and L2 breakdown by type. Use this for a quick health check without scrolling through context.list.",
+    inputSchema: {
+      type: "object",
+      properties: {
         projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
       },
     },
@@ -841,6 +855,7 @@ async function handleGetMemory(args: unknown): Promise<unknown> {
       createdAt: result.memory.createdAt,
       updatedAt: result.memory.updatedAt,
       accessCount: result.memory.accessCount,
+      pinned: result.memory.pinned ?? false,
     },
     layer: result.layer,
   };
@@ -910,12 +925,19 @@ async function handleListMemories(args: unknown): Promise<unknown> {
       tags: m.tags,
       createdAt: m.createdAt,
       updatedAt: m.updatedAt,
+      pinned: m.pinned ?? false,
     })),
     total: result.total,
     limit: params.limit,
     offset: params.offset,
     layer: params.layer ?? 2,
   };
+}
+
+async function handleGetStats(args: unknown): Promise<unknown> {
+  const params = StatsSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  return engine.getStats();
 }
 
 async function handleSetup(args: unknown): Promise<unknown> {
@@ -1038,6 +1060,9 @@ async function createServer(): Promise<Server> {
           break;
         case "context.list":
           result = await handleListMemories(args);
+          break;
+        case "context.stats":
+          result = await handleGetStats(args);
           break;
         case "context.setup":
           result = await handleSetup(args);

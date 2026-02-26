@@ -39,6 +39,7 @@ export class ProjectMemoryLayer {
   private stmtFindByTypePaginated!: StatementSync;
   private stmtCountByType!: StatementSync;
   private stmtSetPinned!: StatementSync;
+  private stmtCountPinned!: StatementSync;
 
   constructor(projectPath: string, baseDir?: string) {
     this.projectPath = path.resolve(projectPath);
@@ -172,6 +173,7 @@ export class ProjectMemoryLayer {
     );
 
     this.stmtSetPinned = this.db.prepare('UPDATE memories SET pinned = ? WHERE id = ?');
+    this.stmtCountPinned = this.db.prepare('SELECT COUNT(*) as count FROM memories WHERE pinned = 1');
   }
 
   /** No-op — node:sqlite is synchronous, so the layer is always ready. */
@@ -364,6 +366,12 @@ export class ProjectMemoryLayer {
   /** Return the total number of memories in this project. */
   count(): number {
     const row = this.stmtCount.get() as { count: number } | undefined;
+    return row?.count ?? 0;
+  }
+
+  /** Return the number of pinned memories. */
+  countPinned(): number {
+    const row = this.stmtCountPinned.get() as { count: number } | undefined;
     return row?.count ?? 0;
   }
 
