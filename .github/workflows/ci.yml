@@ -27,5 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Create local_cache placeholder for Docker build
+        run: mkdir -p local_cache
       - name: Build Docker image
         run: docker build -t context-fabric .
