@@ -111,7 +111,8 @@ export function discoverFiles(projectPath: string, maxFiles: number = 10_000): s
 
   try {
     files = discoverViaGit(projectPath);
-  } catch {
+  } catch (err) {
+    console.warn('[ContextFabric] git ls-files failed, falling back to readdir:', err);
     files = discoverViaReaddir(projectPath);
   }
 

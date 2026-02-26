@@ -193,6 +193,7 @@ export class PatternExtractor {
           : []) as string[],
       };
     } catch (error) {
+      this.logFn('warn', 'memoryToPattern failed for memory', memory.id, error);
       return null;
     }
   }

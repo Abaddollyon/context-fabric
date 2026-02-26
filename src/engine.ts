@@ -133,6 +133,7 @@ export class ContextEngine {
       baseDir: storagePaths.l3Path,
       decayDays: this.config.ttl.l3DecayDays,
       decayThreshold: this.config.ttl.l3DecayThreshold,
+      embeddingTimeoutMs: this.config.embedding.timeoutMs,
       collectionName: 'semantic_memories',
       isEphemeral: options.isEphemeral,
     });

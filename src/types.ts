@@ -344,6 +344,7 @@ export interface FabricConfig {
     model: string;
     dimension: number;
     batchSize: number;
+    timeoutMs: number; // Max ms for a single embed() call (default: 30000)
   };
   context: {
     maxWorkingMemories: number;

@@ -11,9 +11,26 @@ export class EmbeddingService {
   private initialized: boolean = false;
   private initPromise: Promise<void> | null = null;
   private initFailed: boolean = false;
+  private timeoutMs: number;
 
-  constructor(modelName: EmbeddingModel = EmbeddingModel.BGESmallEN) {
+  constructor(modelName: EmbeddingModel = EmbeddingModel.BGESmallEN, timeoutMs = 30_000) {
     this.modelName = modelName;
+    this.timeoutMs = timeoutMs;
+  }
+
+  /**
+   * Races a promise against a timeout rejection.
+   */
+  private withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+    return Promise.race([
+      promise,
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`EmbeddingService: ${label} timed out after ${this.timeoutMs}ms`)),
+          this.timeoutMs
+        )
+      ),
+    ]);
   }
 
   /**
@@ -36,10 +53,10 @@ export class EmbeddingService {
       // FASTEMBED_CACHE_PATH lets Docker point to the baked-in model,
       // falling back to fastembed's own default cache when running locally.
       const cacheDir = process.env.FASTEMBED_CACHE_PATH || undefined;
-      this.model = await FlagEmbedding.init({
-        model: this.modelName,
-        cacheDir,
-      });
+      this.model = await this.withTimeout(
+        FlagEmbedding.init({ model: this.modelName, cacheDir }),
+        'model initialization'
+      );
       this.initialized = true;
     })();
 
@@ -78,11 +95,35 @@ export class EmbeddingService {
   }
 
   /**
+   * Consume the async generator from model.embed() into a flat array of raw embeddings.
+   */
+  private async collectEmbeddings(
+    gen: AsyncIterable<unknown>
+  ): Promise<(Float32Array | number[])[]> {
+    const embeddings: (Float32Array | number[])[] = [];
+    for await (const embedding of gen) {
+      const emb = embedding as unknown;
+      const isNestedArray =
+        Array.isArray(emb) &&
+        emb.length > 0 &&
+        (Array.isArray((emb as unknown[])[0]) || (emb as unknown[])[0] instanceof Float32Array);
+      if (isNestedArray) {
+        for (const e of emb as (number[] | Float32Array)[]) {
+          embeddings.push(e);
+        }
+      } else {
+        embeddings.push(emb as Float32Array | number[]);
+      }
+    }
+    return embeddings;
+  }
+
+  /**
    * Embed single text
    */
   async embed(text: string): Promise<number[]> {
     await this.init();
-    
+
     // Check cache
     const cached = this.cache.get(text);
     if (cached) {
@@ -93,22 +134,11 @@ export class EmbeddingService {
       throw new Error('Embedding model not initialized');
     }
 
-    // Generate embedding - fastembed yields batches of (Float32Array | number[])
-    const embeddings: (Float32Array | number[])[] = [];
-    for await (const embedding of this.model.embed([text])) {
-      const emb = embedding as unknown;
-      const isNestedArray = Array.isArray(emb) && emb.length > 0 &&
-        (Array.isArray((emb as unknown[])[0]) || (emb as unknown[])[0] instanceof Float32Array);
-      if (isNestedArray) {
-        // It's a batch: Array of (number[] | Float32Array)
-        for (const e of emb as (number[] | Float32Array)[]) {
-          embeddings.push(e);
-        }
-      } else {
-        // It's a single embedding (number[] or Float32Array)
-        embeddings.push(emb as Float32Array | number[]);
-      }
-    }
+    // Generate embedding with timeout guard
+    const embeddings = await this.withTimeout(
+      this.collectEmbeddings(this.model.embed([text])),
+      'embed()'
+    );
 
     if (embeddings.length === 0) {
       throw new Error('Failed to generate embedding');
@@ -119,7 +149,7 @@ export class EmbeddingService {
     // Cache the result (with LRU eviction)
     this.evictIfNeeded();
     this.cache.set(text, result);
-    
+
     return result;
   }
 
@@ -150,21 +180,10 @@ export class EmbeddingService {
 
     // Generate embeddings for uncached texts
     if (uncachedTexts.length > 0) {
-      const embeddings: (Float32Array | number[])[] = [];
-      for await (const embedding of this.model.embed(uncachedTexts)) {
-        const emb = embedding as unknown;
-        const isNestedArray = Array.isArray(emb) && emb.length > 0 &&
-          (Array.isArray((emb as unknown[])[0]) || (emb as unknown[])[0] instanceof Float32Array);
-        if (isNestedArray) {
-          // It's a batch: Array of (number[] | Float32Array)
-          for (const e of emb as (number[] | Float32Array)[]) {
-            embeddings.push(e);
-          }
-        } else {
-          // It's a single embedding (number[] or Float32Array)
-          embeddings.push(emb as Float32Array | number[]);
-        }
-      }
+      const embeddings = await this.withTimeout(
+        this.collectEmbeddings(this.model.embed(uncachedTexts)),
+        'embedBatch()'
+      );
 
       // Store in cache and results (with LRU eviction)
       for (let i = 0; i < uncachedTexts.length; i++) {

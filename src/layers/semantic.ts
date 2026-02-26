@@ -22,6 +22,7 @@ interface SemanticMemoryOptions {
   baseDir?: string;
   decayDays?: number;
   decayThreshold?: number; // relevance score below which a memory is deleted (default: 0.2)
+  embeddingTimeoutMs?: number; // max ms for a single embed call (default: 30000)
   collectionName?: string; // kept for API compat, unused
   isEphemeral?: boolean;   // if true, use in-memory SQLite
 }
@@ -80,7 +81,7 @@ export class SemanticMemoryLayer {
 
     this.initSchema();
     this.prepareStatements();
-    this.embedder = new EmbeddingService();
+    this.embedder = new EmbeddingService(undefined, options.embeddingTimeoutMs ?? 30_000);
   }
 
   private initSchema(): void {

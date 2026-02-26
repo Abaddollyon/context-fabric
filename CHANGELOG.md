@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned
 
+## [0.6.0] - 2026-02-25
+
+### Added
+- **Embedding timeout** — `EmbeddingService` now accepts a `timeoutMs` option (default 30 s) and races all ONNX calls against a rejection timer, preventing the MCP process from hanging indefinitely on a stalled model load or embed call
+- **`npm run dev`** — new `"dev": "tsc --watch"` script for continuous compilation during development
+
+### Changed
+- **Silent catch blocks now warn** — errors that were previously swallowed with empty catch bodies now emit `console.warn` with a descriptive message and the original error:
+  - `events.ts`: code-index reindex failure during `file_opened` event
+  - `code-index.ts`: file watcher reindex, stmtDeleteFile, corrupted chunk embedding, unreadable file during reindex, embedding batch failure
+  - `scanner.ts`: `git ls-files` failure before readdir fallback
+  - `patterns.ts`: `memoryToPattern` conversion failure
+  - `setup.ts`: JSON parse failure when reading a CLI config file
+- **CI expanded** — `.github/workflows/ci.yml` now runs `tsc --noEmit` (type check), `npm audit --audit-level=moderate` (security), and a separate `docker-build` job in addition to the existing build + test steps
+
+### Technical
+- `FabricConfig.embedding.timeoutMs` field added to both the type definition and default config (30 000 ms)
+- `SemanticMemoryOptions.embeddingTimeoutMs` threads the timeout from engine config through to `EmbeddingService`
+- `EmbeddingService.withTimeout<T>()` private helper wraps any promise in `Promise.race` against a labeled rejection
+- Timeout covers both `FlagEmbedding.init()` (model load) and `embed()` / `embedBatch()` (inference)
+
 ## [0.5.5] - 2026-02-25
 
 ### Added
