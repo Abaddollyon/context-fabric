@@ -84,6 +84,7 @@ embedding:
   model: "Xenova/all-MiniLM-L6-v2"
   dimension: 384
   batchSize: 32
+  timeoutMs: 30000    # max ms for a single embed() call — prevents ONNX hangs
 
 context:
   maxWorkingMemories: 10

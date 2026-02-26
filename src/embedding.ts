@@ -22,15 +22,14 @@ export class EmbeddingService {
    * Races a promise against a timeout rejection.
    */
   private withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
-    return Promise.race([
-      promise,
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () => reject(new Error(`EmbeddingService: ${label} timed out after ${this.timeoutMs}ms`)),
-          this.timeoutMs
-        )
-      ),
-    ]);
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`EmbeddingService: ${label} timed out after ${this.timeoutMs}ms`)),
+        this.timeoutMs
+      );
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }
 
   /**
