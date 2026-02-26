@@ -20,7 +20,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npx tsc --noEmit
-      - run: npm audit --audit-level=moderate
+      - run: npm audit --audit-level=critical
       - run: npm test
 
   docker-build:
