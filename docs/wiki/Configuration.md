@@ -289,8 +289,8 @@ docker run --rm \
 
 | Model | Dimension | Speed | Quality |
 |-------|-----------|-------|---------|
-| `Xenova/all-MiniLM-L6-v2` | 384 | ⭐⭐⭐ Fast | ⭐⭐⭐ Good |
-| `Xenova/all-MiniLM-L12-v2` | 384 | ⭐⭐ Medium | ⭐⭐⭐⭐ Better |
+| `Xenova/all-MiniLM-L6-v2` | 384 | Fast | Good |
+| `Xenova/all-MiniLM-L12-v2` | 384 | Medium | Better |
 
 ### Context Section
 

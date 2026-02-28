@@ -9,7 +9,7 @@ Context Fabric tools appear in your AI's tool list via MCP, but agents need expl
 
 ## How It Works
 
-When Context Fabric is connected, your AI sees 16 MCP tools in its available tool list. Each tool has a description, but AI agents work best with explicit guidance in their system prompt or project-level config.
+When Context Fabric is connected, your AI sees 12 MCP tools in its available tool list. Each tool has a description, but AI agents work best with explicit guidance in their system prompt or project-level config.
 
 ### Integration Model
 
@@ -114,13 +114,12 @@ Store these memory types when discovered:
 ### Search and Recall
 - **Before changes**: Call `context.recall` to find relevant prior decisions, patterns, or bug fixes
 - **Code exploration**: Use `context.searchCode` to find symbols by name (mode: `symbol`) or meaning (mode: `semantic`)
-- **Pattern lookup**: Call `context.getPatterns` to see reusable patterns for the current language/file
+- **Pattern lookup**: Use `context.getCurrent` with `language` or `filePath` filters to see reusable patterns
 
 ### Memory Maintenance
-- Use `context.list` to browse memories with filters
-- Use `context.update` to correct or expand stored memories
+- Use `context.list` to browse memories with filters; use `stats: true` for counts
+- Use `context.update` to correct or expand stored memories; use `targetLayer` to promote
 - Use `context.delete` to remove outdated memories
-- Use `context.promote` to move a memory to a higher layer (L1→L2, L2→L3)
 
 ### Weight System (v0.5.3+)
 Memories accept `metadata.weight` (1-5, default 3):
@@ -138,24 +137,20 @@ Memories accept `metadata.weight` (1-5, default 3):
 
 ## Per-Tool Guidance
 
-Reference table for when to call each of the 16 tools:
+Reference table for when to call each of the 12 tools:
 
 | Tool | When to Call | Frequency | Key Parameters |
 |------|-------------|-----------|----------------|
-| `context.orient` | Session start — ground yourself in time and context | Once per session | `timezone`, `projectPath` |
+| `context.orient` | Session start; also for date resolution and world-clock queries | Once per session | `timezone`, `projectPath`, `expression`, `also` |
 | `context.store` | After making decisions, fixing bugs, discovering patterns | As needed | `type`, `content`, `metadata.tags` |
-| `context.recall` | Before starting a task — check for relevant prior context | As needed | `query`, `threshold`, `filter` |
+| `context.recall` | Before starting a task — check for relevant prior context | As needed | `query`, `mode`, `threshold`, `filter` |
 | `context.searchCode` | When exploring codebase — find symbols or understand structure | As needed | `query`, `mode` (symbol/text/semantic) |
-| `context.getPatterns` | When writing new code that might follow existing patterns | Occasionally | `language`, `filePath` |
+| `context.getCurrent` | To get full context window (working + relevant + patterns + ghost messages) | Occasionally | `sessionId`, `language`, `filePath` |
 | `context.reportEvent` | On file opens, errors, commands, decisions | As events occur | `event.type`, `event.payload` |
-| `context.ghost` | To get silent background context for current situation | Occasionally | `trigger`, `currentContext` |
-| `context.time` | When reasoning about time, deadlines, or timezones | Rarely | `timezone`, `expression` |
-| `context.getCurrent` | To get full context window (working + relevant + patterns) | Rarely | `sessionId` |
 | `context.get` | To retrieve a specific memory by ID | As needed | `memoryId` |
-| `context.update` | To correct or expand a stored memory | As needed | `memoryId`, `content`, `metadata` |
+| `context.update` | To correct, expand, or promote a stored memory | As needed | `memoryId`, `content`, `targetLayer` |
 | `context.delete` | To remove outdated or incorrect memories | As needed | `memoryId` |
-| `context.list` | To browse and audit the memory store | Occasionally | `layer`, `type`, `tags` |
-| `context.promote` | To move a working memory to permanent storage (L1→L2→L3) | Occasionally | `memoryId`, `fromLayer` |
+| `context.list` | To browse and audit the memory store; use `stats: true` for counts | Occasionally | `layer`, `type`, `tags`, `stats` |
 | `context.summarize` | To compress old memories and keep the database lean | Weekly/monthly | `layer`, `olderThanDays` |
 | `context.setup` | To install Context Fabric in another CLI tool | Once | `cli`, `useDocker` |
 
@@ -362,6 +357,6 @@ L2 memories are automatically scoped to the project path. You don't need to manu
 
 ## See Also
 
-- [Tools Reference](https://github.com/Abaddollyon/context-fabric/blob/main/docs/tools-reference.md) — All 16 tools with full parameter docs
+- [Tools Reference](https://github.com/Abaddollyon/context-fabric/blob/main/docs/tools-reference.md) — All 12 tools with full parameter docs
 - [CLI Setup](https://github.com/Abaddollyon/context-fabric/blob/main/docs/cli-setup.md) — Per-CLI configuration
 - [Memory Types](https://github.com/Abaddollyon/context-fabric/blob/main/docs/memory-types.md) — Smart routing, decay, and layer system

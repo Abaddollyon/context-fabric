@@ -157,7 +157,7 @@ npm install --verbose 2>&1 | head -100
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   | docker run --rm -i context-fabric
 
-# Should output JSON with 16 tools. If not, check server logs.
+# Should output JSON with 12 tools. If not, check server logs.
 
 # 2. Check CLI config file exists and is valid JSON
 cat ~/.kimi/mcp.json        # Kimi
@@ -492,7 +492,7 @@ claude mcp status
 File > Preferences > Cursor Settings > Tools & Integrations > MCP Tools
 ```
 
-Should show `context-fabric` with 16 tools.
+Should show `context-fabric` with 12 tools.
 
 ---
 
@@ -812,7 +812,7 @@ docker run --rm -v context-fabric-data:/data -i alpine tar xzf - < context-fabri
 
 ### Complete Reset
 
-**⚠️ Warning: This deletes all memories!**
+**Warning: This deletes all memories!**
 
 ```bash
 # Stop all Context Fabric instances first
@@ -846,7 +846,7 @@ We're genuinely sorry you're having trouble. Let's get this sorted:
    - Debug logs (with `LOG_LEVEL=debug`)
    - Steps to reproduce
 
-**Remember:** Every issue you report helps make Context Fabric better for everyone. Don't hesitate to reach out — we're here to help! 💪
+Every issue you report helps make Context Fabric better for everyone. Don't hesitate to reach out.
 
 ---
 

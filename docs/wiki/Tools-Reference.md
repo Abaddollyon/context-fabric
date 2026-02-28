@@ -1,9 +1,9 @@
 # Tools Reference
 
-Context Fabric exposes **16 MCP tools** organized into six categories. Your AI calls these automatically — you rarely need to invoke them by hand.
+Context Fabric exposes **12 MCP tools** organized into six categories. Your AI calls these automatically — you rarely need to invoke them by hand.
 
 > [!TIP]
-> Tools marked with ⭐ are the most commonly used. Your AI should call `context.orient` at session start and `context.store` whenever you make decisions or fix bugs.
+> The most commonly used tools are `context.orient` (session start), `context.store` (decisions, bug fixes), and `context.recall` (before making changes).
 
 ---
 
@@ -15,8 +15,6 @@ Context Fabric exposes **16 MCP tools** organized into six categories. Your AI c
   - [context.store](#contextstore-)
   - [context.recall](#contextrecall-)
   - [context.getCurrent](#contextgetcurrent)
-- [Time Tools](#time-tools)
-  - [context.time](#contexttime)
 - [Code Tools](#code-tools)
   - [context.searchCode](#contextsearchcode-)
 - [CRUD Tools](#crud-tools)
@@ -26,13 +24,11 @@ Context Fabric exposes **16 MCP tools** organized into six categories. Your AI c
   - [context.list](#contextlist)
 - [Management Tools](#management-tools)
   - [context.summarize](#contextsummarize)
-  - [context.promote](#contextpromote)
-  - [context.ghost](#contextghost)
-  - [context.getPatterns](#contextgetpatterns)
   - [context.reportEvent](#contextreportevent)
 - [Setup Tools](#setup-tools)
   - [context.setup](#contextsetup)
 - [Memory Layers](#memory-layers)
+- [Migration from v0.6](#migration-from-v06)
 - [See Also](#see-also)
 
 ---
@@ -41,26 +37,25 @@ Context Fabric exposes **16 MCP tools** organized into six categories. Your AI c
 
 | Category | Tools | Purpose |
 |:---------|:------|:--------|
-| **Core** | `getCurrent`, `store`, `recall` | Store and retrieve memories |
-| **Time** | `time`, `orient` | Time awareness and session orientation |
+| **Core** | `orient`, `store`, `recall`, `getCurrent` | Session orientation, store and retrieve memories |
 | **Code** | `searchCode` | Search indexed source code |
 | **CRUD** | `get`, `update`, `delete`, `list` | Memory lifecycle management |
-| **Management** | `summarize`, `promote`, `ghost`, `getPatterns`, `reportEvent` | Advanced memory operations |
+| **Management** | `summarize`, `reportEvent` | Maintenance and event capture |
 | **Setup** | `setup` | CLI configuration |
 
 ---
 
 ## Core Tools
 
-### `context.orient` ⭐
-
-The orientation loop. Call this at the start of every session to ground the AI in time, project, and recent changes.
+### `context.orient`
+The orientation loop. Call this at the start of every session to ground the AI in time, project, and recent changes. Also resolves natural-language date expressions and provides world-clock conversions.
 
 **Returns:**
 - Current time with timezone context
 - Time since last session (offline gap)
 - Memories added while you were away
 - Human-readable summary
+- Optionally: resolved date and timezone conversions
 
 **Parameters**
 
@@ -68,8 +63,21 @@ The orientation loop. Call this at the start of every session to ground the AI i
 |:----------|:-----|:---------|:------------|
 | `timezone` | string | No | IANA timezone (e.g., `America/New_York`). Defaults to system timezone |
 | `projectPath` | string | No | Project path. Defaults to current working directory |
+| `expression` | string | No | Date expression to resolve (e.g., `tomorrow`, `next Monday`, `end of week`) |
+| `also` | string[] | No | Additional IANA timezones for world-clock conversion |
 
-**Example Request**
+**Supported Expressions**
+
+| Expression | Result |
+|:-----------|:-------|
+| `now`, `today`, `yesterday`, `tomorrow` | Self-explanatory |
+| `start of day`, `end of day` | Day boundaries |
+| `start of week`, `end of week` | Week boundaries (Mon-Sun) |
+| `next Monday` … `next Sunday` | Upcoming weekday |
+| `last Monday` … `last Sunday` | Previous weekday |
+| ISO date string | Parsed as-is |
+
+**Example Request (Orientation)**
 
 ```json
 {
@@ -114,10 +122,18 @@ The orientation loop. Call this at the start of every session to ground the AI i
 }
 ```
 
+**Example Request (Date Resolution + World Clock)**
+
+```json
+{
+  "expression": "next Monday",
+  "also": ["Europe/London", "Asia/Tokyo"]
+}
+```
+
 ---
 
-### `context.store` ⭐
-
+### `context.store`
 Store a memory in the fabric. The Smart Router auto-selects the optimal layer (L1/L2/L3) based on content type if you don't specify one.
 
 **Memory Types**
@@ -184,9 +200,8 @@ Store a memory in the fabric. The Smart Router auto-selects the optimal layer (L
 
 ---
 
-### `context.recall` ⭐
-
-Semantic search across all memory layers. Finds memories by meaning — no need for exact keyword matches.
+### `context.recall`
+Hybrid search across all memory layers. Three modes: `hybrid` (FTS5 BM25 + vector cosine fused with RRF, default), `semantic` (vector-only), `keyword` (FTS5 BM25-only). Finds memories by meaning — no need for exact keyword matches.
 
 **Parameters**
 
@@ -196,6 +211,7 @@ Semantic search across all memory layers. Finds memories by meaning — no need 
 | `sessionId` | string | Yes | Session identifier |
 | `limit` | number | No | Max results (default: 10) |
 | `threshold` | number | No | Min similarity 0-1 (default: 0.7) |
+| `mode` | string | No | `hybrid`, `semantic`, or `keyword` (default: `hybrid`) |
 | `filter` | object | No | See filter options below |
 
 **Filter Options**
@@ -215,6 +231,7 @@ Semantic search across all memory layers. Finds memories by meaning — no need 
   "sessionId": "session-abc-123",
   "limit": 5,
   "threshold": 0.7,
+  "mode": "hybrid",
   "filter": {
     "types": ["bug_fix", "decision"],
     "layers": [2, 3],
@@ -238,20 +255,9 @@ Semantic search across all memory layers. Finds memories by meaning — no need 
       },
       "similarity": 0.89,
       "layer": 2
-    },
-    {
-      "memory": {
-        "id": "mem-067",
-        "type": "decision",
-        "content": "Use JWT with 15-minute expiry for API tokens. Implement refresh token rotation.",
-        "metadata": { "tags": ["auth", "jwt"] },
-        "createdAt": "2026-02-18T10:00:00.000Z"
-      },
-      "similarity": 0.82,
-      "layer": 2
     }
   ],
-  "total": 2
+  "total": 1
 }
 ```
 
@@ -259,7 +265,7 @@ Semantic search across all memory layers. Finds memories by meaning — no need 
 
 ### `context.getCurrent`
 
-Get the current context window for a session — working memories, relevant memories, patterns, and suggestions.
+Get the current context window for a session — working memories, relevant memories, patterns, suggestions, and ghost messages. Supports pattern filtering by language or file path.
 
 **Parameters**
 
@@ -269,40 +275,14 @@ Get the current context window for a session — working memories, relevant memo
 | `currentFile` | string | No | Currently open file path |
 | `currentCommand` | string | No | Current command being executed |
 | `projectPath` | string | No | Project path for context |
-
----
-
-## Time Tools
-
-### `context.time`
-
-Get rich time information with timezone support. Optionally resolve natural language expressions or show world clock conversions.
-
-**Supported Expressions**
-
-| Expression | Result |
-|:-----------|:-------|
-| `now`, `today`, `yesterday`, `tomorrow` | Self-explanatory |
-| `start of day`, `end of day` | Day boundaries |
-| `start of week`, `end of week` | Week boundaries (Mon-Sun) |
-| `next Monday` … `next Sunday` | Upcoming weekday |
-| `last Monday` … `last Sunday` | Previous weekday |
-| ISO date string | Parsed as-is |
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `timezone` | string | No | IANA timezone name |
-| `expression` | string | No | Natural language expression to resolve |
-| `also` | string[] | No | Additional timezones for world clock |
+| `language` | string | No | Filter patterns by language (e.g., `typescript`) |
+| `filePath` | string | No | Filter patterns by file path |
 
 ---
 
 ## Code Tools
 
-### `context.searchCode` ⭐
-
+### `context.searchCode`
 Search the project's source code index. Three modes:
 - `text` — Full-text search across file contents
 - `symbol` — Find functions/classes/types by name
@@ -322,45 +302,6 @@ The index is built automatically on first use and stays up-to-date via file watc
 | `limit` | number | No | Max results (default: 10) |
 | `threshold` | number | No | Min similarity for semantic search (default: 0.5) |
 | `includeContent` | boolean | No | Include source content (default: true) |
-
-**Example Request (Semantic)**
-
-```json
-{
-  "query": "function that validates user input",
-  "mode": "semantic",
-  "language": "typescript",
-  "limit": 5
-}
-```
-
-**Example Response**
-
-```json
-{
-  "results": [
-    {
-      "filePath": "src/validation/user.ts",
-      "language": "typescript",
-      "symbol": {
-        "name": "validateUserInput",
-        "kind": "function",
-        "signature": "export function validateUserInput(data: unknown): ValidationResult",
-        "lineStart": 15,
-        "lineEnd": 42,
-        "docComment": "Validates user input against the UserSchema"
-      }
-    }
-  ],
-  "indexStatus": {
-    "totalFiles": 42,
-    "totalSymbols": 187,
-    "lastIndexed": "2026-02-25T09:15:00.000Z",
-    "isStale": false
-  },
-  "total": 1
-}
-```
 
 **Supported Languages**
 
@@ -388,7 +329,7 @@ Get a specific memory by ID. Searches across all layers.
 
 ### `context.update`
 
-Update a memory's content, metadata, or tags. L1 memories cannot be updated (they're ephemeral). L3 memories are re-embedded only if content changes.
+Update a memory's content, metadata, tags, weight, or pinned status. L1 memories cannot be updated (they're ephemeral). L3 memories are re-embedded only if content changes. Use `targetLayer` to promote a memory to a higher layer.
 
 **Parameters**
 
@@ -400,6 +341,10 @@ Update a memory's content, metadata, or tags. L1 memories cannot be updated (the
 | `tags` | string[] | No | New tags (replaces existing) |
 | `weight` | number | No | Update weight (1-5) |
 | `pinned` | boolean | No | Pin/unpin memory |
+| `targetLayer` | number | No | Promote to layer 2 or 3 (auto-detects current layer) |
+
+> [!NOTE]
+> Promoting to L3 via `targetLayer: 3` generates an embedding vector (~50ms).
 
 ---
 
@@ -414,20 +359,11 @@ Delete a memory by ID. Searches across all layers.
 | `memoryId` | string | Yes | Memory ID |
 | `projectPath` | string | No | Project path |
 
-**Response**
-
-```json
-{
-  "success": true,
-  "deletedFrom": 2
-}
-```
-
 ---
 
 ### `context.list`
 
-Browse memories with filters and pagination. Defaults to L2 (project) memories.
+Browse memories with filters and pagination. Defaults to L2 (project) memories. Use `stats: true` to get memory store counts instead of listing memories.
 
 **Parameters**
 
@@ -438,6 +374,7 @@ Browse memories with filters and pagination. Defaults to L2 (project) memories.
 | `tags` | string[] | No | Filter by tags (OR logic) |
 | `limit` | number | No | Max results (default: 20) |
 | `offset` | number | No | Pagination offset (default: 0) |
+| `stats` | boolean | No | If true, return counts per layer instead of memory list |
 
 ---
 
@@ -455,50 +392,6 @@ Condense old memories into a summary entry. Keeps databases lean over time.
 | `layer` | number | No | Layer to summarize: 2 or 3 (default: 2) |
 | `olderThanDays` | number | No | Summarize memories older than N days (default: 30) |
 | `options` | object | Yes | `{ targetTokens, focusTypes?, includePatterns?, includeDecisions? }` |
-
----
-
-### `context.promote`
-
-Promote a memory to a higher layer (L1→L2 or L2→L3). Upgrades persistence and scope.
-
-> [!NOTE]
-> Promoting to L3 generates an embedding vector (~50ms).
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `memoryId` | string | Yes | Memory ID |
-| `fromLayer` | number | Yes | Current layer (1 or 2) |
-
----
-
-### `context.ghost`
-
-Get ghost messages — silent context injections invisible to the user but informing the AI.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `sessionId` | string | Yes | Session identifier |
-| `trigger` | string | Yes | What triggered the request (e.g., `file_opened`) |
-| `currentContext` | string | Yes | Description of current context |
-
----
-
-### `context.getPatterns`
-
-Get relevant code patterns for the current context.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `language` | string | No | Filter by language |
-| `filePath` | string | No | Filter by file |
-| `limit` | number | No | Max patterns (default: 5) |
 
 ---
 
@@ -554,17 +447,6 @@ Install Context Fabric into a CLI's MCP config automatically.
 | `useDocker` | boolean | No | Use Docker transport (default: false) |
 | `preview` | boolean | No | Return config without writing (default: false) |
 
-**Example**
-
-```json
-// Preview mode
-{
-  "cli": "kimi",
-  "useDocker": true,
-  "preview": true
-}
-```
-
 ---
 
 ## Memory Layers
@@ -581,8 +463,22 @@ The **Smart Router** automatically assigns memories to the optimal layer based o
 
 ---
 
+## Migration from v0.6
+
+Five tools were consolidated in v0.7.1:
+
+| Old Tool | Use Instead | How |
+|:---------|:-----------|:----|
+| `context.ghost` | `context.getCurrent` | Ghost messages are in the `ghostMessages` field |
+| `context.time` | `context.orient` | Use `expression` and `also` params |
+| `context.getPatterns` | `context.getCurrent` | Use `language` and `filePath` params |
+| `context.promote` | `context.update` | Use `targetLayer` param |
+| `context.stats` | `context.list` | Use `stats: true` |
+
+---
+
 ## See Also
 
 - [Home](Home) — Overview and quick start
-- [Architecture](../docs/architecture.md) — System internals
-- [Memory Types](../docs/memory-types.md) — Detailed type system
+- [Architecture](Architecture) — System internals
+- [Memory Types](Memory-Types) — Detailed type system

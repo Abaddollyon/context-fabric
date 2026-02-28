@@ -9,11 +9,16 @@ How Context Fabric works under the hood. Read this if you want to contribute, ex
   - [L1: Working Memory](#l1-working-memory)
   - [L2: Project Memory](#l2-project-memory)
   - [L3: Semantic Memory](#l3-semantic-memory)
+- [Hybrid Search](#hybrid-search)
+  - [Three Recall Modes](#three-recall-modes)
+  - [FTS5 Full-Text Search](#fts5-full-text-search)
+  - [Reciprocal Rank Fusion (RRF)](#reciprocal-rank-fusion-rrf)
 - [Time Service](#time-service)
 - [Routing Logic](#routing-logic)
 - [Embedding Strategy](#embedding-strategy)
 - [Decay Algorithm](#decay-algorithm)
 - [Context Window Construction](#context-window-construction)
+- [Code Indexer](#code-indexer)
 - [Event Handling](#event-handling)
 - [Data Flow](#data-flow)
 - [Performance](#performance)
@@ -34,7 +39,7 @@ graph TB
     end
 
     subgraph Server["Context Fabric MCP Server"]
-        TH["Tool Handlers\n16 MCP tools"]
+        TH["Tool Handlers\n12 MCP tools"]
         CE["Context Engine\nOrchestrator"]
         SR["Smart Router\ncontent → layer"]
         TS["Time Service\nIANA tz, anchors, gaps"]
@@ -125,24 +130,39 @@ CREATE TABLE memories (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
   content TEXT NOT NULL,
-  metadata TEXT,          -- JSON blob
-  tags TEXT,              -- JSON array
+  metadata TEXT,                    -- JSON blob
+  tags TEXT,                        -- JSON array
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   access_count INTEGER DEFAULT 0,
-  last_accessed_at INTEGER
-);
-
-CREATE TABLE project_meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
+  last_accessed_at INTEGER,
+  pinned INTEGER NOT NULL DEFAULT 0 -- v0.5.5: exempt from summarization
 );
 
 CREATE INDEX idx_type ON memories(type);
 CREATE INDEX idx_created ON memories(created_at);
+CREATE INDEX idx_pinned ON memories(pinned);
+
+-- FTS5 full-text search (v0.7, external content mode — no data duplication)
+CREATE VIRTUAL TABLE memories_fts USING fts5(
+  content, type,
+  content='memories', content_rowid='rowid',
+  tokenize='porter unicode61'
+);
+
+-- Triggers keep FTS in sync with the content table
+CREATE TRIGGER memories_fts_insert AFTER INSERT ON memories BEGIN ... END;
+CREATE TRIGGER memories_fts_delete AFTER DELETE ON memories BEGIN ... END;
+CREATE TRIGGER memories_fts_update AFTER UPDATE ON memories BEGIN ... END;
+
+CREATE TABLE project_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 ```
 
-The `project_meta` table stores per-project metadata. The `last_seen` key is used by `context.orient` to detect offline gaps between sessions.
+The `project_meta` table stores per-project metadata. The `last_seen` key is used by `context.orient` to detect offline gaps between sessions. The FTS5 virtual table enables BM25-ranked keyword search via `searchBM25()`.
 
 ### L3: Semantic Memory
 
@@ -152,11 +172,13 @@ Long-term cross-project knowledge with vector search.
 class SemanticMemoryLayer {
   private db: DatabaseSync;       // from node:sqlite
   private embedder: EmbeddingService;
-  private decayDays: number = 30;
+  private decayDays: number = 14;
+  private decayThreshold: number = 0.2;
 
   store(content, type, metadata): Memory
-  recall(query, limit): ScoredMemory[]
-  applyDecay(): number  // returns count of deleted memories
+  recall(query, limit): ScoredMemory[]       // vector cosine similarity
+  searchBM25(query, limit): BM25Result[]     // FTS5 keyword search
+  applyDecay(): number                       // returns count of deleted memories
 }
 ```
 
@@ -180,6 +202,105 @@ sequenceDiagram
 ```
 
 Embedding vectors are stored as JSON arrays in a `TEXT` column. Cosine similarity is computed in-process — a full linear scan over all rows. This is fast for typical memory counts (under 10K entries).
+
+**L3 schema:**
+
+```sql
+CREATE TABLE semantic_memories (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  metadata TEXT NOT NULL,          -- JSON blob
+  tags TEXT NOT NULL,              -- JSON array
+  embedding TEXT NOT NULL,         -- JSON array of 384 floats
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  accessed_at INTEGER NOT NULL,
+  access_count INTEGER NOT NULL DEFAULT 0,
+  relevance_score REAL NOT NULL DEFAULT 1.0,
+  pinned INTEGER NOT NULL DEFAULT 0
+);
+
+-- FTS5 full-text search (v0.7, external content mode)
+CREATE VIRTUAL TABLE semantic_fts USING fts5(
+  content, type,
+  content='semantic_memories', content_rowid='rowid',
+  tokenize='porter unicode61'
+);
+```
+
+Both L2 and L3 use FTS5 external content mode, which avoids duplicating data. Triggers on INSERT/DELETE/UPDATE keep the FTS index in sync automatically.
+
+## Hybrid Search
+
+Added in v0.7.0. `context.recall` supports three search modes, with hybrid as the default.
+
+### Three Recall Modes
+
+| Mode | L1 | L2 | L3 | Default |
+|------|:--:|:--:|:--:|:-------:|
+| **semantic** | Substring match | `LIKE '%query%'` | Vector cosine similarity | |
+| **keyword** | Substring match | FTS5 BM25 | FTS5 BM25 | |
+| **hybrid** | Substring match | FTS5 BM25 + vector cosine (RRF) | FTS5 BM25 + vector cosine (RRF) | Yes |
+
+L1 always uses substring matching since it is in-memory with no FTS or embeddings.
+
+### FTS5 Full-Text Search
+
+Both L2 and L3 have FTS5 virtual tables using the `porter unicode61` tokenizer (stemming + Unicode normalization). FTS5 uses external content mode — the virtual table stores no data, reading from the main table via rowid. Triggers keep it in sync.
+
+The `searchBM25()` method on both layers runs:
+
+```sql
+SELECT m.*, fts.rank AS bm25_score
+FROM memories_fts AS fts
+JOIN memories AS m ON m.rowid = fts.rowid
+WHERE memories_fts MATCH ?
+ORDER BY fts.rank  -- lower = more relevant in SQLite's BM25 convention
+LIMIT ?
+```
+
+BM25 scores in SQLite are negative (lower = more relevant). The engine normalizes them to [0, 1] using `1 / (1 + |score|)` before ranking.
+
+### Reciprocal Rank Fusion (RRF)
+
+In hybrid mode, two rankers run independently:
+
+1. **Keyword ranker**: FTS5 BM25 on L2 + L3 (via `searchBM25()`)
+2. **Semantic ranker**: Vector cosine similarity on L3 (via `recall()`)
+
+Their results are fused using RRF:
+
+```
+RRF_score(d) = sum( 1 / (k + rank_i(d)) )   where k=60, rank is 1-based
+```
+
+The algorithm:
+1. Fetch `limit * 2` candidates from each ranker (over-fetch for better fusion)
+2. Score each document by summing `1 / (k + rank)` across both lists
+3. Deduplicate by memory ID, keeping the version with higher original similarity
+4. Normalize final scores to [0, 1] so threshold filtering (default 0.7) remains meaningful
+5. Apply weight multiplier: `score * (weight / 3)` where weight defaults to 3
+
+```mermaid
+sequenceDiagram
+    participant CLI
+    participant Engine as Context Engine
+    participant L2FTS as L2: FTS5
+    participant L3FTS as L3: FTS5
+    participant L3Vec as L3: Vector
+
+    CLI->>Engine: recall("auth middleware", mode="hybrid")
+    Engine->>L2FTS: searchBM25("auth middleware")
+    Engine->>L3FTS: searchBM25("auth middleware")
+    Engine->>L3Vec: recall("auth middleware")
+    L2FTS-->>Engine: BM25 results
+    L3FTS-->>Engine: BM25 results
+    L3Vec-->>Engine: cosine results
+    Engine->>Engine: Fuse keyword + semantic via RRF
+    Engine->>Engine: Normalize to [0,1], apply weight multiplier
+    Engine-->>CLI: RankedMemory[] (hybrid scores)
+```
 
 ## Time Service
 
@@ -340,8 +461,12 @@ score = (age_decay * 0.3 + inactivity_penalty * 0.7) + access_boost
 - `age_decay = exp(-age / (decayDays * 2))` — older memories fade
 - `inactivity_penalty = exp(-timeSinceAccess / decayDays)` — unused memories fade faster
 - `access_boost = min(accessCount / 10, 0.5)` — frequent access resists decay
-- If `score < 0.1`: memory is **deleted**
-- Decay runs automatically every hour
+- Default `decayDays = 14`, `decayThreshold = 0.2`
+- If `score < 0.2`: memory is **deleted**
+- Pinned memories (`pinned = 1`) are exempt from decay
+- Decay runs on two triggers:
+  - **Every `context.orient` call** (fire-and-forget, non-blocking)
+  - **Hourly interval** while the engine is active
 
 ## Context Window Construction
 
@@ -377,11 +502,41 @@ sequenceDiagram
 The construction algorithm:
 
 1. **L1**: Get all working memories (capped at `maxWorkingMemories`)
-2. **L2**: Get the 5 most recent project memories
-3. **L3**: Use the top 3 working memory contents as a semantic search query, retrieve top 5 results
-4. **Combine**: Merge L2 and L3 results, sort by relevance score, cap at `maxRelevantMemories`
+2. **L2**: Get the 5 most recent project memories, score each at `0.8 * (weight / 3)`
+3. **L3**: Use the top 3 working memory contents as a semantic search query, retrieve top 5 results, score each at `cosine_similarity * (weight / 3)`
+4. **Combine**: Merge L2 and L3 results, sort by weighted relevance, cap at `maxRelevantMemories`
 5. **Patterns**: Extract code patterns for the current project
-6. **Package**: Return the complete `ContextWindow`
+6. **Ghost messages**: Generate invisible context injections from recent decisions and bug fixes
+7. **Package**: Return the complete `ContextWindow`
+
+The weight multiplier (`metadata.weight`, integer 1-5, default 3) scales relevance scores. A weight of 5 gives a 1.67x boost; a weight of 1 gives 0.33x. This allows critical memories to surface above others regardless of recency or similarity.
+
+## Code Indexer
+
+The Code Indexer (`src/indexer/code-index.ts`) provides source code search via `context.searchCode`. It is lazily initialized on first use and shares the L3 embedding service to avoid loading the ONNX model twice.
+
+### Features
+
+- **Three search modes**: `text` (full-text), `symbol` (functions/classes/types by name), `semantic` (natural-language embedding similarity)
+- **Automatic indexing**: Files are indexed on first `searchCode` call. File watching re-indexes on changes.
+- **Chunking**: Files are split into chunks (default 150 lines, 10-line overlap) for granular search results
+- **Symbol extraction**: Parses source files to extract function, class, interface, type, enum, const, and export declarations
+
+### Configuration
+
+```yaml
+codeIndex:
+  enabled: true
+  maxFileSizeBytes: 1048576  # 1MB
+  maxFiles: 10000
+  chunkLines: 150
+  chunkOverlap: 10
+  debounceMs: 500
+  watchEnabled: true
+  excludePatterns: []
+```
+
+The code index is updated incrementally on each `context.orient` call (fire-and-forget).
 
 ## Event Handling
 
@@ -458,7 +613,10 @@ flowchart TD
 |-----------|:--:|:--:|:--:|
 | Store | O(1) | O(1) | O(1)* |
 | Get by ID | O(1) | O(1) | O(1) |
-| Search | O(n) | O(n) | O(n)** |
+| LIKE search | O(n) | O(n) | - |
+| FTS5 BM25 | - | O(log n) | O(log n) |
+| Vector search | - | - | O(n)** |
+| Hybrid (RRF) | - | O(log n) + O(n) | O(log n) + O(n)** |
 
 \* L3 store requires embedding generation (~50ms per memory)
 
@@ -467,7 +625,9 @@ flowchart TD
 ### Bottlenecks
 
 - **Embedding generation**: ~50ms per text on CPU. Batched embedding (`batchSize: 32`) helps for bulk operations.
-- **L3 recall**: Linear scan over all L3 memories. At 10K memories with 384-dim vectors, this takes <100ms.
+- **L3 recall (semantic)**: Linear scan over all L3 memories. At 10K memories with 384-dim vectors, this takes <100ms.
+- **FTS5 search**: Logarithmic — the FTS5 inverted index makes keyword search fast regardless of table size.
+- **Hybrid mode overhead**: Runs both keyword and semantic rankers, then fuses with RRF. Adds ~10-20ms over pure semantic mode.
 - **Cold start**: First embedding requires loading the ONNX model (~2 seconds). Docker pre-bakes the model to avoid download time.
 
 ---

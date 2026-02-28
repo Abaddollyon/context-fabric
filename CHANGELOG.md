@@ -7,7 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned
+## [0.7.1] - 2026-02-28
+
+### Changed
+- **Tool consolidation: 17 → 12 MCP tools** — reduced cognitive load for LLMs by merging 5 redundant tools into existing ones
+
+### Removed
+- **`context.ghost`** → absorbed into `context.getCurrent` (already returned `ghostMessages` + `suggestions`)
+- **`context.time`** → absorbed into `context.orient` (new `expression` + `also` params for date resolution and world clock)
+- **`context.getPatterns`** → absorbed into `context.getCurrent` (new `language` + `filePath` params for pattern filtering)
+- **`context.promote`** → absorbed into `context.update` (new `targetLayer` param triggers promote logic)
+- **`context.stats`** → absorbed into `context.list` (new `stats: true` flag returns counts instead of memories)
+
+### Added
+- **`context.orient`**: `expression` (date resolver) and `also` (world clock) parameters
+- **`context.getCurrent`**: `language` and `filePath` parameters for pattern filtering
+- **`context.update`**: `targetLayer` parameter for memory promotion (copies to new layer, deletes from old)
+- **`context.list`**: `stats` boolean parameter — when true, returns counts per layer, pinned counts, and L2 breakdown by type
+
+### Migration Guide
+| Before (v0.7.0) | After (v0.7.1) |
+|-----------------|----------------|
+| `context.ghost({ sessionId, trigger, currentContext })` | `context.getCurrent({ sessionId })` → read `ghostMessages` + `suggestions` |
+| `context.time({ expression: "tomorrow" })` | `context.orient({ expression: "tomorrow" })` |
+| `context.time({ also: ["America/New_York"] })` | `context.orient({ also: ["America/New_York"] })` |
+| `context.getPatterns({ language: "ts" })` | `context.getCurrent({ sessionId, language: "ts" })` → read `patterns` |
+| `context.promote({ memoryId, fromLayer: 2 })` | `context.update({ memoryId, targetLayer: 3 })` |
+| `context.stats()` | `context.list({ stats: true })` |
+
+### Design Decisions
+| Decision | Rationale |
+|----------|-----------|
+| Engine methods stay intact | `engine.ghost()`, `engine.promote()`, `engine.getStats()` remain for direct callers — only the MCP tool layer changes |
+| `targetLayer` auto-detects `fromLayer` | No need for callers to know the current layer — `context.update` finds it via `getMemory()` |
+| `stats` is a flag on `list` | Both return memory metadata; a flag is simpler than a separate tool |
+
+## [0.7.0] - 2026-02-28
+
+### Added
+- **Hybrid Search (FTS5 + Vector + RRF)** — the single biggest retrieval quality improvement since launch:
+  - **FTS5 virtual tables** on both L2 (`memories_fts`) and L3 (`semantic_fts`) with porter + unicode61 tokenizer, external content mode (no data duplication), and automatic trigger-based sync on insert/update/delete
+  - **`searchBM25(query, limit)`** method on both `ProjectMemoryLayer` and `SemanticMemoryLayer` — full-text search with BM25 ranking
+  - **`sanitizeFTS5Query()`** — strips FTS5 operators and wraps tokens in quotes for safe literal matching
+  - **`RecallMode` type** — `'semantic' | 'keyword' | 'hybrid'`
+  - **`mode` parameter on `context.recall`** — choose search strategy per query:
+    - `'hybrid'` (new default) — Reciprocal Rank Fusion of BM25 keyword + vector cosine rankers
+    - `'semantic'` — pure vector cosine similarity (previous default behavior)
+    - `'keyword'` — pure FTS5 BM25 full-text search
+  - **Reciprocal Rank Fusion (RRF)** — `fuseRRF()` merges keyword and semantic result lists using standard RRF algorithm (k=60, Cormack et al.), deduplicates by memory ID, and applies weight multipliers
+  - **BM25 normalization** — `normalizeBM25(score)` maps SQLite's negative BM25 scores to [0, 1] via `1/(1+|score|)`
+
+### Changed
+- **Default recall mode is now `'hybrid'`** — `context.recall` uses RRF fusion by default. Callers can opt into `mode='semantic'` or `mode='keyword'` explicitly
+- **`context.recall` tool description** updated to reflect hybrid search capabilities
+
+### Design Decisions
+| Decision | Rationale |
+|----------|-----------|
+| External content FTS5 | No data duplication; FTS reads from content table via implicit rowid |
+| Porter + unicode61 tokenizer | Stemming improves recall ("authentication" matches "authenticate"), unicode61 handles non-ASCII |
+| BM25 normalization: `1/(1+\|score\|)` | Simple, monotonic, [0,1] range. RRF uses ranks not scores, so exact values matter less |
+| RRF k=60 | Standard constant from Cormack et al. Dampens top-rank dominance |
+| L1 excluded from RRF | Ephemeral, no FTS/embeddings. Appended with fixed score after fusion |
+| Fetch 2x limit for fusion | More candidates improve RRF quality |
+
+### Technical
+- FTS5 migration is idempotent — detects via `sqlite_master` lookup, same pattern as pinned column migration
+- Existing databases get FTS tables + backfill on first startup after upgrade
+- All existing tests continue to pass; new tests: `fts5.test.ts` (22), `rrf.test.ts` (9), keyword mode (7), hybrid mode (4)
 
 ## [0.6.0] - 2026-02-25
 
@@ -267,7 +334,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic type definitions
 - Development environment setup
 
-[Unreleased]: https://github.com/Abaddollyon/context-fabric/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Abaddollyon/context-fabric/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/Abaddollyon/context-fabric/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/Abaddollyon/context-fabric/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/Abaddollyon/context-fabric/compare/v0.5.5...v0.6.0
 [0.5.5]: https://github.com/Abaddollyon/context-fabric/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/Abaddollyon/context-fabric/compare/v0.5.3...v0.5.4
