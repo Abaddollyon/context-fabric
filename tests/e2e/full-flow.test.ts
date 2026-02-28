@@ -85,12 +85,12 @@ describe('End-to-End: CLI Session Flow', () => {
       expect(sessionMemory?.type).toBe('scratchpad');
     });
     
-    it('should initialize ghost suggestions', async () => {
-      const ghostResult = await engine.ghost();
-      
-      expect(ghostResult).toBeDefined();
-      expect(ghostResult.messages).toBeDefined();
-      expect(ghostResult.suggestedActions).toBeDefined();
+    it('should initialize ghost suggestions via context window', async () => {
+      const contextWindow = await engine.getContextWindow();
+
+      expect(contextWindow).toBeDefined();
+      expect(contextWindow.ghostMessages).toBeDefined();
+      expect(contextWindow.suggestions).toBeDefined();
     });
   });
   
@@ -394,59 +394,56 @@ describe('End-to-End: CLI Session Flow', () => {
   // Step 7: Ghost shows suggestions
   // ============================================================================
   
-  describe('Step 7: Ghost Messages', () => {
-    it('should generate ghost messages', async () => {
-      const ghostResult = await engine.ghost();
-      
-      expect(ghostResult.messages).toBeDefined();
-      expect(ghostResult.messages.length).toBeGreaterThan(0);
+  describe('Step 7: Ghost Messages (via Context Window)', () => {
+    it('should generate ghost messages in context window', async () => {
+      const contextWindow = await engine.getContextWindow();
+
+      expect(contextWindow.ghostMessages).toBeDefined();
+      expect(contextWindow.ghostMessages.length).toBeGreaterThan(0);
     });
-    
+
     it('should include ghost messages about recent decisions', async () => {
-      const ghostResult = await engine.ghost();
-      
-      const decisionGhost = ghostResult.messages.find(m => 
+      const contextWindow = await engine.getContextWindow();
+
+      const decisionGhost = contextWindow.ghostMessages.find(m =>
         m.trigger === 'relevant_decision'
       );
-      
+
       expect(decisionGhost).toBeDefined();
       expect(decisionGhost?.content).toContain('decision');
       expect(decisionGhost?.role).toBe('system');
       expect(decisionGhost?.isVisible).toBe(false);
     });
-    
+
     it('should include ghost messages about bug fixes', async () => {
-      const ghostResult = await engine.ghost();
-      
-      const bugGhost = ghostResult.messages.find(m => 
+      const contextWindow = await engine.getContextWindow();
+
+      const bugGhost = contextWindow.ghostMessages.find(m =>
         m.trigger === 'bug_fix_context'
       );
-      
+
       expect(bugGhost).toBeDefined();
       expect(bugGhost?.content).toContain('bug fix');
     });
-    
-    it('should include ghost messages in context window', async () => {
-      const context = await engine.getContextWindow();
-      
-      expect(context.ghostMessages.length).toBeGreaterThan(0);
-      
-      // All ghost messages should be invisible
-      context.ghostMessages.forEach(gm => {
+
+    it('should have all ghost messages invisible', async () => {
+      const contextWindow = await engine.getContextWindow();
+
+      expect(contextWindow.ghostMessages.length).toBeGreaterThan(0);
+
+      contextWindow.ghostMessages.forEach(gm => {
         expect(gm.isVisible).toBe(false);
       });
     });
-    
-    it('should provide context-aware suggested actions', async () => {
-      const ghostResult = await engine.ghost();
-      
-      // Should have suggestions based on session context
-      expect(ghostResult.suggestedActions.length).toBeGreaterThan(0);
-      
-      // Should reference source memories
-      for (const action of ghostResult.suggestedActions) {
-        expect(action.sourceMemoryIds).toBeDefined();
-        expect(action.sourceMemoryIds.length).toBeGreaterThan(0);
+
+    it('should provide context-aware suggestions in context window', async () => {
+      const contextWindow = await engine.getContextWindow();
+
+      expect(contextWindow.suggestions.length).toBeGreaterThan(0);
+
+      for (const suggestion of contextWindow.suggestions) {
+        expect(suggestion.sourceMemoryIds).toBeDefined();
+        expect(suggestion.sourceMemoryIds.length).toBeGreaterThan(0);
       }
     });
   });
@@ -735,9 +732,9 @@ export class UserService {
       const recallResults = await engine.recall('architecture', { limit: 10 });
       expect(recallResults).toBeDefined();
       
-      // 6. Get ghost suggestions
-      const ghostResult = await engine.ghost();
-      expect(ghostResult.messages.length).toBeGreaterThan(0);
+      // 6. Get ghost messages via context window
+      const fullContext = await engine.getContextWindow();
+      expect(fullContext.ghostMessages.length).toBeGreaterThan(0);
       
       // 7. Verify all layers have content
       expect(engine.l1.getAll().length).toBeGreaterThan(0);

@@ -40,6 +40,7 @@ export class ProjectMemoryLayer {
   private stmtCountByType!: StatementSync;
   private stmtSetPinned!: StatementSync;
   private stmtCountPinned!: StatementSync;
+  private stmtSearchBM25!: StatementSync;
 
   constructor(projectPath: string, baseDir?: string) {
     this.projectPath = path.resolve(projectPath);
@@ -85,6 +86,9 @@ export class ProjectMemoryLayer {
     }
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_pinned ON memories(pinned)');
 
+    // Migration: FTS5 virtual table for full-text search (v0.7)
+    this.initFTS5();
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS memory_tags (
         memory_id TEXT NOT NULL,
@@ -103,6 +107,52 @@ export class ProjectMemoryLayer {
         updated_at INTEGER NOT NULL
       )
     `);
+  }
+
+  /**
+   * Initialize FTS5 virtual table for full-text search.
+   * Uses external content mode (no data duplication — reads from memories table via rowid).
+   * Idempotent: safe to call on existing databases.
+   */
+  private initFTS5(): void {
+    // Check if FTS table already exists
+    const ftsExists = this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='memories_fts'"
+    ).get();
+
+    if (!ftsExists) {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE memories_fts USING fts5(
+          content, type,
+          content='memories', content_rowid='rowid',
+          tokenize='porter unicode61'
+        )
+      `);
+
+      // Triggers to keep FTS in sync with the content table
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS memories_fts_insert AFTER INSERT ON memories BEGIN
+          INSERT INTO memories_fts(rowid, content, type) VALUES (NEW.rowid, NEW.content, NEW.type);
+        END
+      `);
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
+          INSERT INTO memories_fts(memories_fts, rowid, content, type) VALUES('delete', OLD.rowid, OLD.content, OLD.type);
+        END
+      `);
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE ON memories BEGIN
+          INSERT INTO memories_fts(memories_fts, rowid, content, type) VALUES('delete', OLD.rowid, OLD.content, OLD.type);
+          INSERT INTO memories_fts(rowid, content, type) VALUES (NEW.rowid, NEW.content, NEW.type);
+        END
+      `);
+
+      // Backfill existing data
+      this.db.exec(`
+        INSERT INTO memories_fts(rowid, content, type)
+        SELECT rowid, content, type FROM memories
+      `);
+    }
   }
 
   private prepareStatements(): void {
@@ -174,6 +224,15 @@ export class ProjectMemoryLayer {
 
     this.stmtSetPinned = this.db.prepare('UPDATE memories SET pinned = ? WHERE id = ?');
     this.stmtCountPinned = this.db.prepare('SELECT COUNT(*) as count FROM memories WHERE pinned = 1');
+
+    this.stmtSearchBM25 = this.db.prepare(`
+      SELECT m.*, bm25(memories_fts) as bm25_score
+      FROM memories_fts fts
+      JOIN memories m ON m.rowid = fts.rowid
+      WHERE memories_fts MATCH ?
+      ORDER BY bm25(memories_fts)
+      LIMIT ?
+    `);
   }
 
   /** No-op — node:sqlite is synchronous, so the layer is always ready. */
@@ -445,6 +504,47 @@ export class ProjectMemoryLayer {
   getMemoriesSince(epochMs: number): Memory[] {
     const rows = this.stmtGetSince.all(epochMs) as DatabaseRow[];
     return rows.map(r => this.rowToMemory(r));
+  }
+
+  /**
+   * Full-text search using FTS5 BM25 ranking.
+   * Returns memories sorted by BM25 relevance (lower = more relevant in SQLite's convention).
+   */
+  searchBM25(query: string, limit = 10): Array<{ memory: Memory; bm25Score: number }> {
+    if (!query.trim()) return [];
+
+    const sanitized = ProjectMemoryLayer.sanitizeFTS5Query(query);
+    if (!sanitized) return [];
+
+    try {
+      const rows = this.stmtSearchBM25.all(sanitized, limit) as Array<DatabaseRow & { bm25_score: number }>;
+      return rows.map(row => ({
+        memory: this.rowToMemory(row),
+        bm25Score: row.bm25_score as number,
+      }));
+    } catch {
+      // FTS5 query syntax error — fall back to empty results
+      return [];
+    }
+  }
+
+  /**
+   * Sanitize a query string for FTS5 MATCH syntax.
+   * Strips FTS5 operators and wraps each token in double quotes to force literal matching.
+   */
+  static sanitizeFTS5Query(query: string): string {
+    // Remove FTS5 special operators and punctuation that could cause parse errors
+    const cleaned = query
+      .replace(/[*"():^{}~<>]/g, ' ')  // strip FTS5 operators
+      .replace(/\b(AND|OR|NOT|NEAR)\b/gi, '')  // strip boolean keywords
+      .trim();
+    if (!cleaned) return '';
+
+    // Split into tokens and wrap each in quotes to force literal matching
+    const tokens = cleaned.split(/\s+/).filter(t => t.length > 0);
+    if (tokens.length === 0) return '';
+
+    return tokens.map(t => `"${t}"`).join(' ');
   }
 
   close(): void {

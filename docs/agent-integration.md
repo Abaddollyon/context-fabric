@@ -9,7 +9,7 @@ Context Fabric exposes its tools via MCP, but your AI agent needs instructions t
 
 ## How It Works
 
-When Context Fabric is connected to a CLI tool, the AI sees 16 MCP tools in its available tool list (e.g. `context.orient`, `context.store`, `context.searchCode`). Each tool has a description that hints at when to use it, but AI agents work best when given explicit guidance in their system prompt or project-level config.
+When Context Fabric is connected to a CLI tool, the AI sees 12 MCP tools in its available tool list (e.g. `context.orient`, `context.store`, `context.searchCode`). Each tool has a description that hints at when to use it, but AI agents work best when given explicit guidance in their system prompt or project-level config.
 
 The integration model:
 
@@ -85,8 +85,8 @@ You have access to Context Fabric for persistent memory and code search. Use it 
   patterns, or bug fixes.
 - **Code exploration**: Use `context.searchCode` to find functions, classes, and types
   by name or by meaning. Prefer this over grep for symbol lookups.
-- **Pattern lookup**: Call `context.getPatterns` to see reusable patterns for the current
-  language or file.
+- **Pattern lookup**: Use `context.getCurrent` with `language` or `filePath` filters
+  to see reusable patterns for the current context.
 
 ### Events (optional)
 - **File opens**: Call `context.reportEvent` with type "file_opened" when opening a file,
@@ -103,28 +103,24 @@ When should the agent call each tool? Here's the full mapping:
 
 | Tool | When to Call | Frequency |
 |------|-------------|-----------|
-| `context.orient` | Session start | Once per session |
+| `context.orient` | Session start; also for date resolution and world-clock queries | Once per session |
 | `context.store` | After making a decision, fixing a bug, or discovering a pattern | As needed |
 | `context.recall` | Before starting a task, to check for relevant prior context | As needed |
 | `context.searchCode` | When exploring the codebase, looking up symbols, or understanding structure | As needed |
-| `context.getPatterns` | When writing new code that might follow an existing pattern | Occasionally |
+| `context.getCurrent` | To get the full context window (working + relevant + patterns + ghost messages) | Occasionally |
 | `context.reportEvent` | On file opens, errors, commands, decisions | As events occur |
-| `context.ghost` | To get silent background context for the current situation | Occasionally |
-| `context.time` | When the agent needs to reason about time, deadlines, or timezones | Rarely |
 | `context.summarize` | To compress old memories and keep the database lean | Weekly/monthly |
-| `context.promote` | To move a working memory to permanent storage | Occasionally |
 | `context.setup` | To install Context Fabric in another CLI tool | Once |
-| `context.getCurrent` | To get the full context window (working + relevant + patterns) | Rarely (orient is preferred) |
 | `context.get` | To retrieve a specific memory by ID | As needed |
-| `context.update` | To correct or expand a stored memory | As needed |
+| `context.update` | To correct, expand, or promote a stored memory | As needed |
 | `context.delete` | To remove an outdated or incorrect memory | As needed |
-| `context.list` | To browse and audit the memory store | Occasionally |
+| `context.list` | To browse and audit the memory store; use `stats: true` for counts | Occasionally |
 
 ---
 
 ## Example: Claude Code
 
-The project ships a `CLAUDE.md` at the repo root with full integration instructions. When Claude Code opens the project, it reads this file automatically and uses all 16 tools without any manual prompting.
+The project ships a `CLAUDE.md` at the repo root with full integration instructions. When Claude Code opens the project, it reads this file automatically and uses all 12 tools without any manual prompting.
 
 If you want to replicate this in your own project, create a `CLAUDE.md`:
 
@@ -143,7 +139,7 @@ After adding this, start a new Claude Code session. The agent will call `context
 
 ### A note on ghost injection in Claude Code
 
-`context.getCurrent` and `context.ghost` return a `ghostMessages` array — memories surfaced as `role: system, isVisible: false` messages. In a **custom agent loop** these would be silently prepended to the system prompt before the LLM sees anything, making them truly invisible to the user.
+`context.getCurrent` returns a `ghostMessages` array — memories surfaced as `role: system, isVisible: false` messages. In a **custom agent loop** these would be silently prepended to the system prompt before the LLM sees anything, making them truly invisible to the user.
 
 In Claude Code, MCP tool results are visible in the conversation as tool output. The ghost messages still reach the agent and inform its responses, but they are not truly hidden from the user. For full invisible injection, you need a custom integration layer that calls `getCurrent` before each turn and injects the `ghostMessages` into the system prompt directly.
 

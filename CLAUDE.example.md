@@ -43,9 +43,9 @@ The index is built lazily on first call and stays up-to-date automatically.
 ## Managing memories
 
 Use the CRUD tools to inspect and maintain the memory store:
-- `context.list` — browse memories with layer/type/tag filters
+- `context.list` — browse memories with layer/type/tag filters; use `stats: true` for a count summary
 - `context.get` — retrieve a specific memory by ID
-- `context.update` — correct or expand a stored memory; also use for updating `weight`
+- `context.update` — correct or expand a stored memory; also use for updating `weight` or promoting via `targetLayer`
 - `context.delete` — remove outdated or incorrect memories
 
 If the store accumulates noise (e.g. from test runs), use `context.list` to filter by tag then delete in bulk via a Node script rather than individual MCP calls.

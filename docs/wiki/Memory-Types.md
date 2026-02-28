@@ -74,7 +74,7 @@ flowchart TB
         L2_STORE["Storage: SQLite node:sqlite"]
         L2_SCOPE["Scope: Per-project"]
         L2_TTL["TTL: None — permanent"]
-        L2_SEARCH["Search: Full-text LIKE"]
+        L2_SEARCH["Search: FTS5 BM25 + LIKE"]
     end
     
     L2 -->|promote| L3
@@ -133,7 +133,7 @@ Persistent project-specific knowledge. The main store for decisions, bug fixes, 
 | **Scope** | Per-project (identified by `projectPath`) |
 | **TTL** | None — permanent until deleted or summarized |
 | **Persistence** | File-based (survives restarts) |
-| **Search** | Full-text via `LIKE '%query%'` |
+| **Search** | FTS5 BM25 (keyword) + `LIKE '%query%'` (fallback) |
 
 <details>
 <summary>📋 Database Schema</summary>
@@ -216,7 +216,7 @@ CREATE TABLE semantic_memories (
 - User preferences that span multiple projects
 
 <details>
-<summary>🔍 Vector Search Flow</summary>
+<summary>Vector Search Flow</summary>
 
 ```
 Query: "auth error handling"
@@ -376,7 +376,7 @@ flowchart TB
 
 ## Promotion and Demotion
 
-Memories can be promoted to a higher layer using `context.promote`:
+Memories can be promoted to a higher layer using `context.update` with `targetLayer`:
 
 ### Promotion Paths
 
@@ -409,15 +409,15 @@ const memory = await context.store({
 });
 
 // Later, realize this is important — promote to L2
-await context.promote({
+await context.update({
   memoryId: memory.id,
-  toLayer: 2
+  targetLayer: 2
 });
 
 // Even later, recognize as reusable pattern — promote to L3
-await context.promote({
+await context.update({
   memoryId: memory.id,
-  toLayer: 3
+  targetLayer: 3
 });
 ```
 

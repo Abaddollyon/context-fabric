@@ -27,6 +27,9 @@ export enum MemoryLayer {
   L3_SEMANTIC = 3,
 }
 
+/** Recall search mode: semantic (vector), keyword (FTS5 BM25), or hybrid (RRF fusion). */
+export type RecallMode = 'semantic' | 'keyword' | 'hybrid';
+
 // ============================================================================
 // Metadata Types
 // ============================================================================

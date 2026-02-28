@@ -66,6 +66,7 @@ export class SemanticMemoryLayer {
   private stmtCountByType!: StatementSync;
   private stmtSetPinned!: StatementSync;
   private stmtCountPinned!: StatementSync;
+  private stmtSearchBM25!: StatementSync;
 
   constructor(options: SemanticMemoryOptions = {}) {
     this.decayDays = options.decayDays ?? 14;
@@ -112,6 +113,53 @@ export class SemanticMemoryLayer {
       this.db.exec('ALTER TABLE semantic_memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
     }
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_sem_pinned ON semantic_memories(pinned)');
+
+    // Migration: FTS5 virtual table for full-text search (v0.7)
+    this.initFTS5();
+  }
+
+  /**
+   * Initialize FTS5 virtual table for full-text search on semantic_memories.
+   * Uses external content mode (no data duplication).
+   * Idempotent: safe to call on existing databases.
+   */
+  private initFTS5(): void {
+    const ftsExists = this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='semantic_fts'"
+    ).get();
+
+    if (!ftsExists) {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE semantic_fts USING fts5(
+          content, type,
+          content='semantic_memories', content_rowid='rowid',
+          tokenize='porter unicode61'
+        )
+      `);
+
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS semantic_fts_insert AFTER INSERT ON semantic_memories BEGIN
+          INSERT INTO semantic_fts(rowid, content, type) VALUES (NEW.rowid, NEW.content, NEW.type);
+        END
+      `);
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS semantic_fts_delete AFTER DELETE ON semantic_memories BEGIN
+          INSERT INTO semantic_fts(semantic_fts, rowid, content, type) VALUES('delete', OLD.rowid, OLD.content, OLD.type);
+        END
+      `);
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS semantic_fts_update AFTER UPDATE ON semantic_memories BEGIN
+          INSERT INTO semantic_fts(semantic_fts, rowid, content, type) VALUES('delete', OLD.rowid, OLD.content, OLD.type);
+          INSERT INTO semantic_fts(rowid, content, type) VALUES (NEW.rowid, NEW.content, NEW.type);
+        END
+      `);
+
+      // Backfill existing data
+      this.db.exec(`
+        INSERT INTO semantic_fts(rowid, content, type)
+        SELECT rowid, content, type FROM semantic_memories
+      `);
+    }
   }
 
   private prepareStatements(): void {
@@ -157,6 +205,15 @@ export class SemanticMemoryLayer {
 
     this.stmtSetPinned = this.db.prepare('UPDATE semantic_memories SET pinned = ? WHERE id = ?');
     this.stmtCountPinned = this.db.prepare('SELECT COUNT(*) as count FROM semantic_memories WHERE pinned = 1');
+
+    this.stmtSearchBM25 = this.db.prepare(`
+      SELECT sm.*, bm25(semantic_fts) as bm25_score
+      FROM semantic_fts fts
+      JOIN semantic_memories sm ON sm.rowid = fts.rowid
+      WHERE semantic_fts MATCH ?
+      ORDER BY bm25(semantic_fts)
+      LIMIT ?
+    `);
   }
 
   /** Store a memory along with its computed embedding vector. */
@@ -430,6 +487,44 @@ export class SemanticMemoryLayer {
 
     const row = stmt.get(...tags) as { count: number } | undefined;
     return row?.count ?? 0;
+  }
+
+  /**
+   * Full-text search using FTS5 BM25 ranking.
+   * Returns memories sorted by BM25 relevance.
+   */
+  searchBM25(query: string, limit = 10): Array<{ memory: Memory; bm25Score: number }> {
+    if (!query.trim()) return [];
+
+    const sanitized = SemanticMemoryLayer.sanitizeFTS5Query(query);
+    if (!sanitized) return [];
+
+    try {
+      const rows = this.stmtSearchBM25.all(sanitized, limit) as unknown as Array<DbRow & { bm25_score: number }>;
+      return rows.map(row => ({
+        memory: this.rowToMemory(row),
+        bm25Score: row.bm25_score as number,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Sanitize a query string for FTS5 MATCH syntax.
+   * Strips FTS5 operators and wraps each token in double quotes.
+   */
+  static sanitizeFTS5Query(query: string): string {
+    const cleaned = query
+      .replace(/[*"():^{}~<>]/g, ' ')
+      .replace(/\b(AND|OR|NOT|NEAR)\b/gi, '')
+      .trim();
+    if (!cleaned) return '';
+
+    const tokens = cleaned.split(/\s+/).filter(t => t.length > 0);
+    if (tokens.length === 0) return '';
+
+    return tokens.map(t => `"${t}"`).join(' ');
   }
 
   /** Expose the shared EmbeddingService so the code index can reuse it. */

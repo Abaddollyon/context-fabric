@@ -1,6 +1,6 @@
 # Tools Reference
 
-All 16 MCP tools with full parameter docs and example payloads. Your AI calls these automatically -- you rarely need to invoke them by hand.
+All 12 MCP tools with full parameter docs and example payloads. Your AI calls these automatically -- you rarely need to invoke them by hand.
 
 ## Table of Contents
 
@@ -8,8 +8,7 @@ All 16 MCP tools with full parameter docs and example payloads. Your AI calls th
   - [context.getCurrent](#contextgetcurrent)
   - [context.store](#contextstore)
   - [context.recall](#contextrecall)
-- [Time Tools](#time-tools)
-  - [context.time](#contexttime)
+- [Orientation & Time](#orientation--time)
   - [context.orient](#contextorient)
 - [Code Tools](#code-tools)
   - [context.searchCode](#contextsearchcode)
@@ -20,9 +19,6 @@ All 16 MCP tools with full parameter docs and example payloads. Your AI calls th
   - [context.list](#contextlist)
 - [Management Tools](#management-tools)
   - [context.summarize](#contextsummarize)
-  - [context.promote](#contextpromote)
-  - [context.ghost](#contextghost)
-  - [context.getPatterns](#contextgetpatterns)
   - [context.reportEvent](#contextreportevent)
 - [Setup Tools](#setup-tools)
   - [context.setup](#contextsetup)
@@ -33,7 +29,7 @@ All 16 MCP tools with full parameter docs and example payloads. Your AI calls th
 
 ### context.getCurrent
 
-Get the current context window for a session, including working memories, relevant memories, patterns, and suggestions.
+Get the current context window for a session, including working memories, relevant memories, patterns, suggestions, and ghost messages. Optionally filter patterns by language or file path.
 
 #### Parameters
 
@@ -43,6 +39,8 @@ Get the current context window for a session, including working memories, releva
 | `currentFile` | string | No | Currently open file path |
 | `currentCommand` | string | No | Current command being executed |
 | `projectPath` | string | No | Project path for context |
+| `language` | string | No | Filter patterns by language (e.g. `typescript`, `python`) |
+| `filePath` | string | No | Filter patterns by file path |
 
 #### Example Request
 
@@ -51,7 +49,8 @@ Get the current context window for a session, including working memories, releva
   "sessionId": "session-abc-123",
   "currentFile": "src/main.ts",
   "currentCommand": "npm test",
-  "projectPath": "/home/user/myapp"
+  "projectPath": "/home/user/myapp",
+  "language": "typescript"
 }
 ```
 
@@ -93,6 +92,9 @@ Get the current context window for a session, including working memories, releva
 }
 ```
 
+> [!NOTE]
+> Pattern filtering (via `language`/`filePath`) replaces the old `context.getPatterns` tool. Ghost messages (via the `ghostMessages` field) replace the old `context.ghost` tool.
+
 ---
 
 ### context.store
@@ -108,6 +110,7 @@ Store a new memory in the fabric. If `layer` is not specified, the Smart Router 
 | `metadata` | object | Yes | See metadata fields below |
 | `layer` | number | No | Force layer: `1` (working), `2` (project), `3` (semantic). Auto-detected if omitted |
 | `ttl` | number | No | Time-to-live in seconds (for L1 memories) |
+| `pinned` | boolean | No | Pin this memory to protect it from decay and summarization |
 
 **Metadata fields:**
 
@@ -121,6 +124,7 @@ Store a new memory in the fabric. If `layer` is not specified, the Smart Router 
 | `cliType` | string | No | CLI type identifier (default: `generic`) |
 | `fileContext` | object | No | `{ path, lineStart?, lineEnd?, language? }` |
 | `codeBlock` | object | No | `{ code, language, filePath? }` |
+| `weight` | number | No | Priority 1–5 (default 3). Higher weight surfaces memories above unweighted ones in recall and context window |
 
 #### Example Request
 
@@ -132,7 +136,8 @@ Store a new memory in the fabric. If `layer` is not specified, the Smart Router 
     "tags": ["validation", "api", "zod"],
     "confidence": 0.95,
     "source": "user_explicit",
-    "projectPath": "/home/user/myapp"
+    "projectPath": "/home/user/myapp",
+    "weight": 5
   }
 }
 ```
@@ -151,7 +156,7 @@ Store a new memory in the fabric. If `layer` is not specified, the Smart Router 
 
 ### context.recall
 
-Semantic search across all memory layers. Returns ranked results with similarity scores.
+Hybrid search across all memory layers. Supports three modes: `hybrid` (default, FTS5 BM25 + vector cosine fused with Reciprocal Rank Fusion), `semantic` (vector-only), and `keyword` (FTS5 BM25-only). Returns ranked results with similarity scores.
 
 #### Parameters
 
@@ -161,6 +166,7 @@ Semantic search across all memory layers. Returns ranked results with similarity
 | `sessionId` | string | Yes | Session identifier |
 | `limit` | number | No | Max results to return (default: `10`) |
 | `threshold` | number | No | Minimum similarity score, 0-1 (default: `0.7`) |
+| `mode` | string | No | Search mode: `hybrid`, `semantic`, or `keyword` (default: `hybrid`) |
 | `filter` | object | No | See filter fields below |
 
 **Filter fields:**
@@ -180,6 +186,7 @@ Semantic search across all memory layers. Returns ranked results with similarity
   "sessionId": "session-abc-123",
   "limit": 5,
   "threshold": 0.7,
+  "mode": "hybrid",
   "filter": {
     "types": ["bug_fix", "code_pattern"],
     "layers": [2, 3],
@@ -212,17 +219,18 @@ Semantic search across all memory layers. Returns ranked results with similarity
 
 ---
 
-## Time Tools
+## Orientation & Time
 
-### context.time
+### context.orient
 
-Get the current time as a rich TimeAnchor. Optionally resolve natural-language date expressions or show the same moment in multiple timezones (world clock).
+The orientation loop: "Where am I in time? What happened while I was offline? What project am I in?" Call this at the start of every session to ground the AI. Also resolves natural-language date expressions and provides world-clock conversions.
 
 #### Parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `timezone` | string | No | IANA timezone name (e.g. `America/New_York`). Defaults to system timezone |
+| `timezone` | string | No | IANA timezone name. Defaults to system timezone |
+| `projectPath` | string | No | Project path. Defaults to current working directory |
 | `expression` | string | No | Date expression to resolve (see supported expressions below) |
 | `also` | string[] | No | Additional IANA timezone names for world-clock conversion |
 
@@ -245,75 +253,7 @@ Get the current time as a rich TimeAnchor. Optionally resolve natural-language d
 | ISO date string | Parsed as-is |
 | Epoch milliseconds | Parsed as-is (10+ digits) |
 
-#### Example Request
-
-```json
-{
-  "timezone": "America/New_York",
-  "expression": "next Monday",
-  "also": ["Europe/London", "Asia/Tokyo"]
-}
-```
-
-#### Example Response
-
-```json
-{
-  "resolved": 1772265600000,
-  "anchor": {
-    "epochMs": 1772265600000,
-    "iso": "2026-03-02T00:00:00.000-05:00",
-    "timezone": "America/New_York",
-    "utcOffset": "-05:00",
-    "timeOfDay": "12:00 AM",
-    "date": "Monday, March 2, 2026",
-    "dateShort": "Mar 2",
-    "dayOfWeek": "Monday",
-    "isWeekend": false,
-    "weekNumber": 10,
-    "startOfDay": 1772265600000,
-    "endOfDay": 1772351999999,
-    "startOfNextDay": 1772352000000,
-    "startOfYesterday": 1772179200000,
-    "startOfWeek": 1772265600000,
-    "endOfWeek": 1772870399999,
-    "startOfNextWeek": 1772870400000
-  },
-  "conversions": [
-    {
-      "epochMs": 1772265600000,
-      "timezone": "Europe/London",
-      "iso": "2026-03-02T05:00:00.000+00:00",
-      "timeOfDay": "5:00 AM",
-      "date": "Monday, March 2, 2026",
-      "utcOffset": "+00:00"
-    },
-    {
-      "epochMs": 1772265600000,
-      "timezone": "Asia/Tokyo",
-      "iso": "2026-03-02T14:00:00.000+09:00",
-      "timeOfDay": "2:00 PM",
-      "date": "Monday, March 2, 2026",
-      "utcOffset": "+09:00"
-    }
-  ]
-}
-```
-
----
-
-### context.orient
-
-The orientation loop: "Where am I in time? What happened while I was offline? What project am I in?" Call this at the start of every session to ground the AI.
-
-#### Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `timezone` | string | No | IANA timezone name. Defaults to system timezone |
-| `projectPath` | string | No | Project path. Defaults to current working directory |
-
-#### Example Request
+#### Example Request (Basic Orientation)
 
 ```json
 {
@@ -344,31 +284,46 @@ The orientation loop: "Where am I in time? What happened while I was offline? Wh
 }
 ```
 
-#### Example Response (Returning Session)
+#### Example Request (Date Resolution + World Clock)
 
 ```json
 {
-  "summary": "It is 9:15 AM on Wednesday, February 25, 2026 (Europe/London, UTC+00:00). Project: /home/user/myapp. Last session: 14 hours 23 minutes ago (since 6:52 PM yesterday). 3 new memories were added while offline.",
+  "timezone": "America/New_York",
+  "expression": "next Monday",
+  "also": ["Europe/London", "Asia/Tokyo"]
+}
+```
+
+#### Example Response (Date Resolution)
+
+```json
+{
+  "summary": "...",
   "time": { "..." : "..." },
-  "projectPath": "/home/user/myapp",
-  "offlineGap": {
-    "durationMs": 51780000,
-    "durationHuman": "14 hours 23 minutes",
-    "from": "2026-02-24T18:52:00.000+00:00",
-    "to": "2026-02-25T09:15:00.000+00:00",
-    "memoriesAdded": 3
-  },
-  "recentMemories": [
+  "resolved": 1772265600000,
+  "conversions": [
     {
-      "id": "mem-099",
-      "type": "bug_fix",
-      "content": "Fixed null pointer in user service when email is...",
-      "createdAt": "2026-02-24T22:00:00.000Z",
-      "tags": ["bugfix", "user-service"]
+      "epochMs": 1772265600000,
+      "timezone": "Europe/London",
+      "iso": "2026-03-02T05:00:00.000+00:00",
+      "timeOfDay": "5:00 AM",
+      "date": "Monday, March 2, 2026",
+      "utcOffset": "+00:00"
+    },
+    {
+      "epochMs": 1772265600000,
+      "timezone": "Asia/Tokyo",
+      "iso": "2026-03-02T14:00:00.000+09:00",
+      "timeOfDay": "2:00 PM",
+      "date": "Monday, March 2, 2026",
+      "utcOffset": "+09:00"
     }
   ]
 }
 ```
+
+> [!NOTE]
+> Date resolution and world-clock conversion replace the old `context.time` tool. Orient now handles both session orientation and time queries.
 
 ---
 
@@ -485,6 +440,7 @@ Get a specific memory by its ID. Searches across all layers (L1, L2, L3) and ret
     "content": "Use Zod for all API input validation.",
     "metadata": { "tags": ["validation", "zod"], "confidence": 0.95 },
     "tags": ["validation", "zod"],
+    "pinned": false,
     "createdAt": 1740474900000,
     "updatedAt": 1740474900000,
     "accessCount": 3
@@ -497,7 +453,7 @@ Get a specific memory by its ID. Searches across all layers (L1, L2, L3) and ret
 
 ### context.update
 
-Update an existing memory's content, metadata, or tags. L1 (working) memories cannot be updated — they are ephemeral; store a new one instead. L3 memories are re-embedded only if content changes (metadata/tag-only updates skip the ~50ms embedding step).
+Update an existing memory's content, metadata, or tags. L1 (working) memories cannot be updated — they are ephemeral; store a new one instead. L3 memories are re-embedded only if content changes (metadata/tag-only updates skip the ~50ms embedding step). Use `targetLayer` to promote a memory to a higher layer.
 
 #### Parameters
 
@@ -507,9 +463,12 @@ Update an existing memory's content, metadata, or tags. L1 (working) memories ca
 | `content` | string | No | New content (replaces existing) |
 | `metadata` | object | No | Metadata fields to merge into existing metadata |
 | `tags` | string[] | No | New tags array (replaces existing tags) |
+| `weight` | number | No | Update the memory weight (1–5) |
+| `pinned` | boolean | No | Pin (true) or unpin (false) this memory |
+| `targetLayer` | number | No | Promote memory to this layer (2=project, 3=semantic). Triggers promote logic: copies to new layer and deletes from old |
 | `projectPath` | string | No | Project path. Defaults to current working directory |
 
-#### Example Request
+#### Example Request (Update Content)
 
 ```json
 {
@@ -519,7 +478,7 @@ Update an existing memory's content, metadata, or tags. L1 (working) memories ca
 }
 ```
 
-#### Example Response
+#### Example Response (Update)
 
 ```json
 {
@@ -536,8 +495,27 @@ Update an existing memory's content, metadata, or tags. L1 (working) memories ca
 }
 ```
 
+#### Example Request (Promote L1 → L2)
+
+```json
+{
+  "memoryId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "targetLayer": 2
+}
+```
+
+#### Example Response (Promote)
+
+```json
+{
+  "success": true,
+  "memoryId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "newLayer": 2
+}
+```
+
 > [!NOTE]
-> Updating L1 memories returns an error: "Cannot update L1 (working) memories. They are ephemeral — store a new one instead."
+> Promotion via `targetLayer` replaces the old `context.promote` tool. The memory's current layer is auto-detected — you only need to specify the destination. Promoting from L2 to L3 generates an embedding vector (~50ms).
 
 ---
 
@@ -573,7 +551,7 @@ Delete a memory by its ID. Searches across all layers and deletes from whichever
 
 ### context.list
 
-List and browse memories with optional filters. Supports pagination. Defaults to L2 (project) memories.
+List and browse memories with optional filters. Supports pagination. Defaults to L2 (project) memories. Use `stats: true` to get a summary of the memory store instead of listing memories.
 
 #### Parameters
 
@@ -584,9 +562,10 @@ List and browse memories with optional filters. Supports pagination. Defaults to
 | `tags` | string[] | No | Filter by tags (OR logic — matches if any tag is present) |
 | `limit` | number | No | Maximum results to return (default: `20`) |
 | `offset` | number | No | Offset for pagination (default: `0`) |
+| `stats` | boolean | No | If true, return counts per layer instead of memory list |
 | `projectPath` | string | No | Project path. Defaults to current working directory |
 
-#### Example Request
+#### Example Request (List)
 
 ```json
 {
@@ -597,7 +576,7 @@ List and browse memories with optional filters. Supports pagination. Defaults to
 }
 ```
 
-#### Example Response
+#### Example Response (List)
 
 ```json
 {
@@ -608,6 +587,7 @@ List and browse memories with optional filters. Supports pagination. Defaults to
       "content": "Use Zod for all API validation.",
       "metadata": { "tags": ["validation"] },
       "tags": ["validation"],
+      "pinned": false,
       "createdAt": 1740474900000,
       "updatedAt": 1740474900000
     }
@@ -618,6 +598,29 @@ List and browse memories with optional filters. Supports pagination. Defaults to
   "layer": 2
 }
 ```
+
+#### Example Request (Stats)
+
+```json
+{
+  "stats": true
+}
+```
+
+#### Example Response (Stats)
+
+```json
+{
+  "l1": 3,
+  "l2": 47,
+  "l3": 12,
+  "total": 62,
+  "pinned": { "l2": 2, "l3": 1 }
+}
+```
+
+> [!NOTE]
+> The stats mode replaces the old `context.stats` tool.
 
 ---
 
@@ -669,135 +672,6 @@ Condense old memories in a layer (L2 or L3) into a summary entry. Useful for kee
   "summarizedCount": 47,
   "summary": "Over the past 30 days, 47 memories were archived. Key decisions: ...",
   "layer": 2
-}
-```
-
----
-
-### context.promote
-
-Promote a memory to a higher layer (L1 to L2, or L2 to L3). This upgrades its persistence and scope.
-
-#### Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `memoryId` | string | Yes | ID of the memory to promote |
-| `fromLayer` | number | Yes | Current layer of the memory: `1` or `2` |
-
-#### Example Request
-
-```json
-{
-  "memoryId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "fromLayer": 1
-}
-```
-
-#### Example Response
-
-```json
-{
-  "success": true,
-  "memoryId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "newLayer": 2
-}
-```
-
-> [!NOTE]
-> Promoting from L2 to L3 generates an embedding vector for semantic search. This adds ~50ms per memory.
-
----
-
-### context.ghost
-
-Get ghost messages — silent context injections that provide relevant background without cluttering the conversation. These are invisible to the user but inform the AI.
-
-#### Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `sessionId` | string | Yes | Session identifier |
-| `trigger` | string | Yes | What triggered the ghost request (e.g. `file_opened`, `error_occurred`) |
-| `currentContext` | string | Yes | Description of the current context |
-| `projectPath` | string | No | Project path |
-
-#### Example Request
-
-```json
-{
-  "sessionId": "session-abc-123",
-  "trigger": "file_opened",
-  "currentContext": "Working on authentication service",
-  "projectPath": "/home/user/myapp"
-}
-```
-
-#### Example Response
-
-```json
-{
-  "messages": [
-    {
-      "id": "ghost-001",
-      "role": "system",
-      "content": "This project uses JWT tokens with 15-minute expiry. The auth module was refactored last week to add refresh token rotation.",
-      "timestamp": "2026-02-25T09:15:00.000Z",
-      "trigger": "file_opened"
-    }
-  ],
-  "relevantMemories": [
-    {
-      "id": "mem-042",
-      "type": "decision",
-      "content": "Use JWT with 15-minute expiry for API tokens..."
-    }
-  ],
-  "suggestedActions": []
-}
-```
-
----
-
-### context.getPatterns
-
-Get relevant code patterns for the current context, optionally filtered by language or file.
-
-#### Parameters
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `language` | string | No | Filter by programming language |
-| `filePath` | string | No | Filter by file path |
-| `limit` | number | No | Max patterns to return (default: `5`) |
-| `projectPath` | string | No | Project path |
-
-#### Example Request
-
-```json
-{
-  "language": "typescript",
-  "filePath": "src/api/users.ts",
-  "limit": 3,
-  "projectPath": "/home/user/myapp"
-}
-```
-
-#### Example Response
-
-```json
-{
-  "patterns": [
-    {
-      "id": "pat-001",
-      "name": "Zod input validation",
-      "description": "Validate all API inputs with Zod schemas before processing",
-      "code": "const schema = z.object({ email: z.string().email(), name: z.string().min(1) });\nconst validated = schema.parse(req.body);",
-      "language": "typescript",
-      "usageCount": 12,
-      "lastUsedAt": "2026-02-24T16:00:00.000Z"
-    }
-  ]
 }
 ```
 
@@ -937,6 +811,20 @@ Install and configure Context Fabric into a CLI tool's MCP config. The AI calls 
   "message": "This is what would be added to your gemini MCP config. Call context.setup without preview:true to write it."
 }
 ```
+
+---
+
+## Migration from v0.6 → v0.7.1
+
+Five tools were consolidated into existing tools:
+
+| Old Tool | Use Instead | Notes |
+|----------|------------|-------|
+| `context.ghost` | `context.getCurrent` | Ghost messages are in the `ghostMessages` field |
+| `context.time` | `context.orient` | Use `expression` and `also` params for date resolution and world clock |
+| `context.getPatterns` | `context.getCurrent` | Use `language` and `filePath` params to filter patterns |
+| `context.promote` | `context.update` | Use `targetLayer` param to promote to a higher layer |
+| `context.stats` | `context.list` | Use `stats: true` to get memory store counts |
 
 ---
 

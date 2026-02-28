@@ -9,17 +9,17 @@ This is the GitHub wiki for [Context Fabric](https://github.com/Abaddollyon/cont
 | [Home](Home) | Landing page with features, quick start, real-world examples | 193 |
 | [Getting-Started](Getting-Started) | Installation (Docker & local), first run, verification | 507 |
 | [CLI-Setup](CLI-Setup) | Configuration for all 7 supported CLI tools | 436 |
-| [Tools-Reference](Tools-Reference) | All 16 MCP tools with parameters and examples | 588 |
+| [Tools-Reference](Tools-Reference) | All 12 MCP tools with parameters and examples | 588 |
 | [Memory-Types](Memory-Types) | Three-layer architecture with Mermaid diagrams | 457 |
 | [Configuration](Configuration) | Config file reference, env vars, storage paths | 317 |
-| [Architecture](Architecture) | System internals, data flow, performance | 994 |
+| [Architecture](Architecture) | System internals, data flow, performance | 1222 |
 | [Agent-Integration](Agent-Integration) | System prompt instructions for CLIs | 367 |
-| [FAQ](FAQ) | Frequently asked questions with real scenarios | 492 |
+| [FAQ](FAQ) | Frequently asked questions with real scenarios | 494 |
 | [Troubleshooting](Troubleshooting) | Common issues with empathy and solutions | 853 |
 | [_Sidebar](_Sidebar) | Wiki navigation | 26 |
 | [_Footer](_Footer) | Consistent footer with branding | 16 |
 
-**Total: 5,246 lines of documentation**
+**Total: 5,427 lines of documentation**
 
 ## Design Features
 

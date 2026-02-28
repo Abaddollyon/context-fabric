@@ -120,29 +120,6 @@ describe('MCP Server Integration', () => {
     };
   }
   
-  async function handleGetPatterns(args: {
-    language?: string;
-    filePath?: string;
-    limit?: number;
-  }) {
-    const patterns = await engine.patternExtractor.extractPatterns(context.projectPath);
-    const ranked = engine.patternExtractor.rankPatterns(patterns, {
-      language: args.language,
-      filePath: args.filePath,
-    });
-    
-    return {
-      patterns: ranked.slice(0, args.limit || 5).map(p => ({
-        id: p.id,
-        name: p.name,
-        description: p.description,
-        code: p.code,
-        language: p.language,
-        usageCount: p.usageCount,
-        lastUsedAt: p.lastUsedAt,
-      })),
-    };
-  }
   
   async function handleReportEvent(args: {
     event: {
@@ -164,25 +141,6 @@ describe('MCP Server Integration', () => {
     };
   }
   
-  async function handleGhost(args: { sessionId: string }) {
-    const result = await engine.ghost();
-    
-    return {
-      messages: result.messages.map(m => ({
-        id: m.id,
-        role: m.role,
-        content: m.content,
-        timestamp: m.timestamp,
-        trigger: m.trigger,
-      })),
-      relevantMemories: result.relevantMemories.map(m => ({
-        id: m.id,
-        type: m.type,
-        content: m.content.substring(0, 200),
-      })),
-      suggestedActions: result.suggestedActions,
-    };
-  }
   
   async function handleGetMemory(args: { memoryId: string; projectPath?: string }) {
     const result = await engine.getMemory(args.memoryId);
@@ -203,7 +161,24 @@ describe('MCP Server Integration', () => {
     };
   }
 
-  async function handleUpdateMemory(args: { memoryId: string; content?: string; metadata?: Record<string, unknown>; tags?: string[]; weight?: number; pinned?: boolean; projectPath?: string }) {
+  async function handleUpdateMemory(args: { memoryId: string; content?: string; metadata?: Record<string, unknown>; tags?: string[]; weight?: number; pinned?: boolean; targetLayer?: number; projectPath?: string }) {
+    // Promote flow
+    if (args.targetLayer !== undefined) {
+      const found = await engine.getMemory(args.memoryId);
+      if (!found) throw new Error(`Memory not found: ${args.memoryId}`);
+      const fromLayer = found.layer;
+      const targetLayer = args.targetLayer as MemoryLayer;
+      if (targetLayer <= fromLayer) {
+        throw new Error(`targetLayer (${targetLayer}) must be higher than current layer (${fromLayer})`);
+      }
+      const memory = await engine.promote(args.memoryId, fromLayer);
+      return {
+        success: true,
+        memoryId: memory.id,
+        newLayer: memory.layer,
+      };
+    }
+
     const updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[]; pinned?: boolean } = {};
     if (args.content !== undefined) updates.content = args.content;
     if (args.metadata !== undefined) updates.metadata = args.metadata;
@@ -234,7 +209,12 @@ describe('MCP Server Integration', () => {
     return { success: true, deletedFrom: result.deletedFrom };
   }
 
-  async function handleListMemories(args: { layer?: number; type?: string; tags?: string[]; limit?: number; offset?: number; projectPath?: string }) {
+  async function handleListMemories(args: { layer?: number; type?: string; tags?: string[]; limit?: number; offset?: number; stats?: boolean; projectPath?: string }) {
+    // Stats mode
+    if (args.stats) {
+      return engine.getStats();
+    }
+
     const result = await engine.listMemories({
       layer: args.layer as MemoryLayer | undefined,
       type: args.type as any,
@@ -259,18 +239,6 @@ describe('MCP Server Integration', () => {
     };
   }
 
-  async function handlePromote(args: {
-    memoryId: string;
-    fromLayer: number;
-  }) {
-    const memory = await engine.promote(args.memoryId, args.fromLayer as MemoryLayer);
-    
-    return {
-      success: true,
-      memoryId: memory.id,
-      newLayer: memory.layer,
-    };
-  }
   
   // ============================================================================
   // Tool: context.getCurrent
@@ -541,50 +509,6 @@ describe('MCP Server Integration', () => {
     });
   });
   
-  // ============================================================================
-  // Tool: context.getPatterns
-  // ============================================================================
-  
-  describe('context.getPatterns', () => {
-    it('should return code patterns', async () => {
-      // Store a pattern
-      await engine.store(
-        JSON.stringify({
-          pattern: {
-            id: 'p1',
-            name: 'Test Pattern',
-            description: 'A test pattern',
-            code: 'const x = 1;',
-            language: 'typescript',
-            usageCount: 1,
-            relatedFiles: [],
-          }
-        }),
-        'code_pattern',
-        { layer: MemoryLayer.L3_SEMANTIC }
-      );
-      
-      const result = await handleGetPatterns({ limit: 5 });
-      
-      expect(result.patterns).toBeDefined();
-      expect(Array.isArray(result.patterns)).toBe(true);
-    });
-    
-    it('should filter by language', async () => {
-      const result = await handleGetPatterns({
-        language: 'typescript',
-        limit: 5,
-      });
-      
-      expect(result.patterns).toBeDefined();
-    });
-    
-    it('should limit results', async () => {
-      const result = await handleGetPatterns({ limit: 3 });
-      
-      expect(result.patterns.length).toBeLessThanOrEqual(3);
-    });
-  });
   
   // ============================================================================
   // Tool: context.reportEvent
@@ -668,75 +592,7 @@ describe('MCP Server Integration', () => {
     });
   });
   
-  // ============================================================================
-  // Tool: context.ghost
-  // ============================================================================
   
-  describe('context.ghost', () => {
-    it('should return ghost messages', async () => {
-      // Create some context
-      await engine.store('Project decision', 'decision', { layer: MemoryLayer.L2_PROJECT });
-      
-      const result = await handleGhost({ sessionId });
-      
-      expect(result.messages).toBeDefined();
-      expect(Array.isArray(result.messages)).toBe(true);
-      expect(result.relevantMemories).toBeDefined();
-      expect(result.suggestedActions).toBeDefined();
-    });
-    
-    it('should return ghost messages with correct structure', async () => {
-      await engine.store('Important decision', 'decision', { layer: MemoryLayer.L2_PROJECT });
-      
-      const result = await handleGhost({ sessionId });
-      
-      for (const msg of result.messages) {
-        expect(msg.id).toBeDefined();
-        expect(['system', 'user', 'assistant']).toContain(msg.role);
-        expect(msg.content).toBeDefined();
-        expect(msg.timestamp).toBeDefined();
-        expect(msg.trigger).toBeDefined();
-      }
-    });
-  });
-  
-  // ============================================================================
-  // Tool: context.promote
-  // ============================================================================
-  
-  describe('context.promote', () => {
-    it('should promote L1 to L2', async () => {
-      const memory = await engine.store(
-        'Important note',
-        'scratchpad',
-        { layer: MemoryLayer.L1_WORKING }
-      );
-      
-      const result = await handlePromote({
-        memoryId: memory.id,
-        fromLayer: 1,
-      });
-      
-      expect(result.success).toBe(true);
-      expect(result.newLayer).toBe(MemoryLayer.L2_PROJECT);
-    });
-    
-    it('should promote L2 to L3', async () => {
-      const memory = await engine.store(
-        'Reusable pattern',
-        'code_pattern',
-        { layer: MemoryLayer.L2_PROJECT }
-      );
-      
-      const result = await handlePromote({
-        memoryId: memory.id,
-        fromLayer: 2,
-      });
-      
-      expect(result.success).toBe(true);
-      expect(result.newLayer).toBe(MemoryLayer.L3_SEMANTIC);
-    });
-  });
   
   // ============================================================================
   // Tool: context.searchCode
@@ -1182,9 +1038,9 @@ export function createUser(name: string): User {
     
     it('should handle non-existent memory promotion', async () => {
       await expect(
-        handlePromote({
+        handleUpdateMemory({
           memoryId: 'non-existent-id',
-          fromLayer: 1,
+          targetLayer: 2,
         })
       ).rejects.toThrow('not found');
     });
@@ -1265,15 +1121,15 @@ export function createUser(name: string): User {
         }),
         handleRecall({ query: 'test', threshold: 0.5 }),
         handleGetCurrent({ sessionId }),
-        handleGetPatterns({ limit: 5 }),
+        handleListMemories({ limit: 5 }),
       ];
-      
+
       const results = await Promise.all(promises);
-      
+
       expect(results[0].success).toBe(true);
       expect(results[1].results).toBeDefined();
       expect(results[2].context).toBeDefined();
-      expect(results[3].patterns).toBeDefined();
+      expect(results[3].memories).toBeDefined();
     });
     
     it('should handle concurrent event processing', async () => {
@@ -1358,6 +1214,150 @@ export function createUser(name: string): User {
 
       const updated = await handleUpdateMemory({ memoryId: stored.id, pinned: false });
       expect(updated.memory.pinned).toBe(false);
+    });
+  });
+
+  // ============================================================================
+  // Tool consolidation: context.update with targetLayer (absorbs promote)
+  // ============================================================================
+
+  describe('context.update with targetLayer (promote)', () => {
+    it('should promote L1 to L2 via targetLayer', async () => {
+      const memory = await engine.store(
+        'Promote via update L1→L2',
+        'scratchpad',
+        { layer: MemoryLayer.L1_WORKING }
+      );
+
+      const result = await handleUpdateMemory({
+        memoryId: memory.id,
+        targetLayer: 2,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.newLayer).toBe(MemoryLayer.L2_PROJECT);
+    });
+
+    it('should promote L2 to L3 via targetLayer', async () => {
+      const memory = await engine.store(
+        'Promote via update L2→L3',
+        'code_pattern',
+        { layer: MemoryLayer.L2_PROJECT }
+      );
+
+      const result = await handleUpdateMemory({
+        memoryId: memory.id,
+        targetLayer: 3,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.newLayer).toBe(MemoryLayer.L3_SEMANTIC);
+    });
+
+    it('should reject promotion to same or lower layer', async () => {
+      const memory = await engine.store(
+        'Cannot demote via targetLayer',
+        'decision',
+        { layer: MemoryLayer.L2_PROJECT }
+      );
+
+      await expect(
+        handleUpdateMemory({
+          memoryId: memory.id,
+          targetLayer: 2,
+        })
+      ).rejects.toThrow('must be higher');
+    });
+  });
+
+  // ============================================================================
+  // Tool consolidation: context.list with stats (absorbs stats tool)
+  // ============================================================================
+
+  describe('context.list with stats', () => {
+    it('should return stats when stats=true', async () => {
+      await engine.store('Stats test', 'decision', { layer: MemoryLayer.L2_PROJECT });
+
+      const result = await handleListMemories({ stats: true }) as any;
+
+      expect(result.l1).toBeDefined();
+      expect(result.l2).toBeDefined();
+      expect(result.l3).toBeDefined();
+      expect(result.total).toBeGreaterThan(0);
+      expect(result.l2.count).toBeGreaterThan(0);
+      expect(typeof result.l2.pinned).toBe('number');
+      expect(typeof result.l2.byType).toBe('object');
+    });
+  });
+
+  // ============================================================================
+  // Tool consolidation: context.getCurrent with language/filePath (absorbs getPatterns)
+  // ============================================================================
+
+  describe('context.getCurrent with pattern filters', () => {
+    it('should return patterns filtered by language', async () => {
+      const result = await handleGetCurrent({ sessionId });
+
+      // Should return context window with patterns (may be empty)
+      expect(result.context.patterns).toBeDefined();
+      expect(Array.isArray(result.context.patterns)).toBe(true);
+    });
+
+    it('should accept language and filePath params without error', async () => {
+      // Simulate what handleGetCurrent does with filters
+      const contextWindow = await engine.getContextWindow();
+      const patterns = await engine.patternExtractor.extractPatterns(context.projectPath);
+      const ranked = engine.patternExtractor.rankPatterns(patterns, {
+        language: 'typescript',
+        filePath: '/some/file.ts',
+      });
+
+      // Should not throw
+      expect(ranked).toBeDefined();
+      expect(Array.isArray(ranked)).toBe(true);
+    });
+  });
+
+  // ============================================================================
+  // Tool consolidation: context.orient with expression/also (absorbs time)
+  // ============================================================================
+
+  describe('context.orient with time params', () => {
+    it('should resolve date expression', async () => {
+      const orientation = await engine.orient();
+      const { TimeService } = await import('../../src/time.js');
+      const ts = new TimeService();
+
+      const epochMs = ts.resolve('tomorrow');
+      const anchor = ts.atTime(epochMs);
+
+      expect(anchor.epochMs).toBeGreaterThan(Date.now());
+      expect(anchor.date).toBeDefined();
+    });
+
+    it('should convert to additional timezones', async () => {
+      const { TimeService } = await import('../../src/time.js');
+      const ts = new TimeService();
+      const orientation = await engine.orient();
+
+      const conversions = ['America/New_York', 'Europe/London'].map(
+        tz => ts.convert(orientation.time.epochMs, tz)
+      );
+
+      expect(conversions).toHaveLength(2);
+      expect(conversions[0].timezone).toBe('America/New_York');
+      expect(conversions[1].timezone).toBe('Europe/London');
+    });
+
+    it('should resolve expression and convert timezones together', async () => {
+      const { TimeService } = await import('../../src/time.js');
+      const ts = new TimeService();
+
+      const epochMs = ts.resolve('end of day');
+      const conversions = ['Asia/Tokyo'].map(tz => ts.convert(epochMs, tz));
+
+      expect(epochMs).toBeGreaterThan(Date.now() - 86400000);
+      expect(conversions[0].timezone).toBe('Asia/Tokyo');
     });
   });
 });

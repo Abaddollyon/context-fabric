@@ -1347,6 +1347,146 @@ export function handleRequest(req: Request): Response {
   });
 
   // ============================================================================
+  // ============================================================================
+  // Keyword Recall Mode (v0.7)
+  // ============================================================================
+
+  describe('keyword recall mode', () => {
+    it('should find exact keyword via BM25 in L2', async () => {
+      await engine.store('ECONNREFUSED error in auth service at port 5432', 'bug_fix', {
+        layer: MemoryLayer.L2_PROJECT,
+        tags: ['error'],
+      });
+
+      const results = await engine.recall('ECONNREFUSED', { mode: 'keyword', limit: 10 });
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0].content).toContain('ECONNREFUSED');
+      expect(results[0].layer).toBe(MemoryLayer.L2_PROJECT);
+    });
+
+    it('should return normalized BM25 scores in [0, 1]', async () => {
+      await engine.store('unique-keyword-test-alpha for normalization', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+      });
+
+      const results = await engine.recall('unique-keyword-test-alpha', { mode: 'keyword', limit: 10 });
+      expect(results.length).toBeGreaterThan(0);
+      for (const r of results) {
+        expect(r.similarity).toBeGreaterThanOrEqual(0);
+        expect(r.similarity).toBeLessThanOrEqual(1);
+      }
+    });
+
+    it('should apply weight multiplier in keyword mode', async () => {
+      await engine.store('keyword-weight-test low priority', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+        metadata: { weight: 1 },
+      });
+      await engine.store('keyword-weight-test high priority', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+        metadata: { weight: 5 },
+      });
+
+      const results = await engine.recall('keyword-weight-test', { mode: 'keyword', limit: 10 });
+      expect(results.length).toBe(2);
+      // Weight-5 should rank above weight-1
+      expect(results[0].content).toContain('high priority');
+    });
+
+    it('should fall back to substring for L1 in keyword mode', async () => {
+      await engine.store('keyword-l1-test ephemeral note', 'scratchpad', {
+        layer: MemoryLayer.L1_WORKING,
+      });
+
+      const results = await engine.recall('keyword-l1-test', { mode: 'keyword', limit: 10 });
+      expect(results.some(r => r.layer === MemoryLayer.L1_WORKING)).toBe(true);
+    });
+
+    it('should return empty for non-matching keyword query', async () => {
+      const results = await engine.recall('zzz-nonexistent-keyword-zzz', { mode: 'keyword', limit: 10 });
+      expect(results).toEqual([]);
+    });
+  });
+
+  // ============================================================================
+  // Hybrid Recall Mode (v0.7 — RRF)
+  // ============================================================================
+
+  describe('hybrid recall mode', () => {
+    it('should find exact keyword via hybrid mode in L2', async () => {
+      await engine.store('ECONNREFUSED hybrid-test in payment service', 'bug_fix', {
+        layer: MemoryLayer.L2_PROJECT,
+        tags: ['error'],
+      });
+
+      const results = await engine.recall('ECONNREFUSED', { mode: 'hybrid', limit: 10 });
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.some(r => r.content.includes('ECONNREFUSED'))).toBe(true);
+    });
+
+    it('should return valid similarity scores', async () => {
+      await engine.store('hybrid-score-test unique memory content', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+      });
+
+      const results = await engine.recall('hybrid-score-test', { mode: 'hybrid', limit: 10 });
+      for (const r of results) {
+        expect(r.similarity).toBeGreaterThan(0);
+        expect(typeof r.similarity).toBe('number');
+      }
+    });
+
+    it('should apply weight multiplier in hybrid mode', async () => {
+      await engine.store('hybrid-weight-test low', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+        metadata: { weight: 1 },
+      });
+      await engine.store('hybrid-weight-test high', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+        metadata: { weight: 5 },
+      });
+
+      const results = await engine.recall('hybrid-weight-test', { mode: 'hybrid', limit: 10 });
+      expect(results.length).toBe(2);
+      expect(results[0].content).toContain('high');
+    });
+
+    it('should include L1 results in hybrid mode', async () => {
+      await engine.store('hybrid-l1-test ephemeral', 'scratchpad', {
+        layer: MemoryLayer.L1_WORKING,
+      });
+      await engine.store('hybrid-l1-test persistent', 'decision', {
+        layer: MemoryLayer.L2_PROJECT,
+      });
+
+      const results = await engine.recall('hybrid-l1-test', { mode: 'hybrid', limit: 10 });
+      const l1 = results.filter(r => r.layer === MemoryLayer.L1_WORKING);
+      const l2 = results.filter(r => r.layer === MemoryLayer.L2_PROJECT);
+      expect(l1.length).toBeGreaterThan(0);
+      expect(l2.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ============================================================================
+  // BM25 Normalization (static method)
+  // ============================================================================
+
+  describe('normalizeBM25', () => {
+    it('should return values in [0, 1]', () => {
+      expect(ContextEngine.normalizeBM25(0)).toBe(1);
+      expect(ContextEngine.normalizeBM25(-1)).toBeCloseTo(0.5);
+      expect(ContextEngine.normalizeBM25(-10)).toBeCloseTo(1 / 11);
+      expect(ContextEngine.normalizeBM25(-100)).toBeCloseTo(1 / 101);
+    });
+
+    it('should be monotonic (less negative = higher score)', () => {
+      const a = ContextEngine.normalizeBM25(-1);
+      const b = ContextEngine.normalizeBM25(-5);
+      expect(a).toBeGreaterThan(b);
+    });
+  });
+
+  // ============================================================================
   // Cleanup (requires L3 for seedTestMemories)
   // ============================================================================
 

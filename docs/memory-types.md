@@ -47,8 +47,8 @@ graph TB
         L3D["SQLite + Embeddings\nDecay-based lifecycle\nCross-project (global)\nSemantic search"]
     end
 
-    L1 -->|"context.promote\n(L1 → L2)"| L2
-    L2 -->|"context.promote\n(L2 → L3)"| L3
+    L1 -->|"context.update\ntargetLayer: 2"| L2
+    L2 -->|"context.update\ntargetLayer: 3"| L3
 
     style L1 fill:#fef3c7,stroke:#f59e0b
     style L2 fill:#dbeafe,stroke:#3b82f6
@@ -192,7 +192,7 @@ Where:
 
 - `age` = time since creation (ms)
 - `timeSinceAccess` = time since last access (ms)
-- `decayDays` = configurable decay period (default: 30 days)
+- `decayDays` = configurable decay period (default: 14 days)
 - `accessCount` = number of times the memory has been accessed
 
 ### Lifecycle
@@ -224,7 +224,7 @@ Decay runs automatically every hour via `setInterval`.
 
 ## Promotion and Demotion
 
-Memories can be promoted to a higher layer using `context.promote`:
+Memories can be promoted to a higher layer using `context.update` with `targetLayer`:
 
 | From | To | What Happens |
 |:----:|:--:|-------------|

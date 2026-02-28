@@ -10,7 +10,7 @@ Get Context Fabric running in under 2 minutes. This guide covers installation, f
 - [Auto-Setup via AI](#auto-setup-via-ai)
 - [First Run](#first-run)
 - [Verification](#verification)
-- [You Did It! 🎉](#you-did-it-)
+- [You Did It](#you-did-it)
 - [Next Steps](#next-steps)
 - [Troubleshooting](#troubleshooting)
 
@@ -72,7 +72,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   | docker run --rm -i context-fabric
 ```
 
-You should see a JSON response listing all 16 MCP tools.
+You should see a JSON response listing all 12 MCP tools.
 
 ### Step 4: Configure with Persistent Storage
 
@@ -226,8 +226,8 @@ A week later, you start a new session and ask:
 Before responding, Context Fabric silently surfaces the Zod decision as a Ghost Message. Your AI sees:
 
 ```
-👻 Ghost Message (relevant context):
-→ "Use Zod for all API validation instead of Joi..."
+Ghost Message (relevant context):
+> "Use Zod for all API validation instead of Joi..."
 ```
 
 Your AI immediately knows to use Zod — no need for you to remember or restate it. The Ghost Message appears in the system context but doesn't appear as part of your chat history. It's like having a knowledgeable teammate who quietly reminds you of important decisions exactly when you need them.
@@ -265,7 +265,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
 
 ### Expected Output
 
-You should see a JSON response with all 16 MCP tools:
+You should see a JSON response with all 12 MCP tools:
 
 ```json
 {
@@ -276,13 +276,9 @@ You should see a JSON response with all 16 MCP tools:
       { "name": "context.getCurrent", ... },
       { "name": "context.store", ... },
       { "name": "context.recall", ... },
-      { "name": "context.summarize", ... },
-      { "name": "context.getPatterns", ... },
-      { "name": "context.reportEvent", ... },
-      { "name": "context.ghost", ... },
-      { "name": "context.promote", ... },
-      { "name": "context.time", ... },
       { "name": "context.orient", ... },
+      { "name": "context.summarize", ... },
+      { "name": "context.reportEvent", ... },
       { "name": "context.searchCode", ... },
       { "name": "context.get", ... },
       { "name": "context.update", ... },
@@ -296,14 +292,14 @@ You should see a JSON response with all 16 MCP tools:
 
 ---
 
-## You Did It! 🎉
+## You Did It
 
-**Congratulations!** Context Fabric is now running and ready to give your AI assistant a memory. Here's what you've accomplished:
+Context Fabric is now running and ready to give your AI assistant a memory. Here's what you've accomplished:
 
-✅ **Built the Docker image** (or installed from source)  
-✅ **Verified the server is responding** with all 16 tools  
-✅ **Configured persistent storage** so memories survive restarts  
-✅ **Connected to your CLI** so your AI can access the tools  
+- **Built the Docker image** (or installed from source)
+- **Verified the server is responding** with all 12 tools
+- **Configured persistent storage** so memories survive restarts
+- **Connected to your CLI** so your AI can access the tools  
 
 ### What's Next?
 
@@ -322,14 +318,14 @@ Your AI assistant now has access to a three-layer memory system. Try these natur
 - **Memories are shared** — Use any supported CLI, your memories follow you
 - **Memories are smart** — Ghost Messages surface context when you need it, without clutter
 
-**Welcome to the future of AI-assisted development.** No more starting from zero every session. Your AI remembers. 💡
+No more starting from zero every session. Your AI remembers.
 
 ---
 
 ## Next Steps
 
 - **[CLI Setup](https://github.com/Abaddollyon/context-fabric/wiki/CLI-Setup)** — Configure Context Fabric for your specific CLI tool (copy-paste configs for all 7 supported CLIs)
-- **[Tools Reference](https://github.com/Abaddollyon/context-fabric/wiki/Tools-Reference)** — All 16 MCP tools with full parameter documentation
+- **[Tools Reference](https://github.com/Abaddollyon/context-fabric/wiki/Tools-Reference)** — All 12 MCP tools with full parameter documentation
 - **[Memory Types](https://github.com/Abaddollyon/context-fabric/wiki/Memory-Types)** — Understand the type system and three-layer architecture (L1, L2, L3)
 - **[Configuration](https://github.com/Abaddollyon/context-fabric/wiki/Configuration)** — Customize storage paths, TTL, embedding, and more
 - **[Architecture](https://github.com/Abaddollyon/context-fabric/wiki/Architecture)** — Deep dive into system internals and data flow
@@ -375,7 +371,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   | docker run --rm -i context-fabric
 ```
 
-**Expected:** JSON output with 16 tools.  
+**Expected:** JSON output with 12 tools.
 **If empty/no output:** The server failed to start. Check Docker logs.
 
 ### Common First-Run Issues
@@ -465,11 +461,9 @@ We're here to help! Before reaching out, gather this info:
 3. Whether you're using Docker or local Node.js
 
 Then:
-- 📖 Check the [full Troubleshooting guide](Troubleshooting) for advanced issues
-- 🐛 [File an issue](https://github.com/Abaddollyon/context-fabric/issues) with the diagnostic output
-- 💬 [Start a discussion](https://github.com/Abaddollyon/context-fabric/discussions) for setup questions
-
-**Remember:** Installation issues are temporary, but the productivity boost from persistent memory lasts forever. You've got this! 💪
+- Check the [full Troubleshooting guide](Troubleshooting) for advanced issues
+- [File an issue](https://github.com/Abaddollyon/context-fabric/issues) with the diagnostic output
+- [Start a discussion](https://github.com/Abaddollyon/context-fabric/discussions) for setup questions
 
 ---
 

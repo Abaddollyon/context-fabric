@@ -52,16 +52,16 @@ The only time you need internet is to clone the repository and build the Docker 
 ### Docker vs Local – which should I choose?
 
 **Docker (recommended for most users):**
-- ✅ Zero Node.js setup on your host
-- ✅ Cross-platform consistency
-- ✅ Easy to upgrade (just rebuild the image)
-- ✅ ONNX model baked in at build time (fast cold starts)
+-Zero Node.js setup on your host
+-Cross-platform consistency
+-Easy to upgrade (just rebuild the image)
+-ONNX model baked in at build time (fast cold starts)
 - ❌ Requires Docker installed
 
 **Local Node.js:**
-- ✅ No Docker dependency
-- ✅ Direct file system access
-- ✅ Easier for development/contributing
+-No Docker dependency
+-Direct file system access
+-Easier for development/contributing
 - ❌ Requires Node.js 22.5+ (specifically for `node:sqlite`)
 - ❌ Managing the ONNX model cache manually
 
@@ -110,16 +110,16 @@ It depends on the layer:
 |-------|-------------|----------|
 | **L1: Working** | Session only | 1 hour TTL by default, or until server restart |
 | **L2: Project** | Permanent | Forever, unless deleted or summarized |
-| **L3: Semantic** | Decay-based | Indefinite with use; 30+ days of inactivity causes decay |
+| **L3: Semantic** | Decay-based | Indefinite with use; 14+ days of inactivity causes decay |
 
-**L3 Decay explained:** Unused L3 memories slowly lose relevance. A memory with 10+ accesses is highly resistant to decay. A memory unused for 30+ days may be deleted. Access memories periodically to keep them alive.
+**L3 Decay explained:** Unused L3 memories slowly lose relevance. A memory with 10+ accesses is highly resistant to decay. A memory unused for 14+ days may be deleted. Pin important memories (`pinned: true`) or access them periodically to keep them alive.
 
 You can tune these values in `~/.context-fabric/config.yaml`:
 
 ```yaml
 ttl:
   l1Default: 3600      # L1 TTL in seconds (1 hour)
-  l3DecayDays: 30      # L3 decay threshold
+  l3DecayDays: 14      # L3 decay period in days
   l3AccessThreshold: 3 # Accesses needed to resist decay
 ```
 
@@ -335,19 +335,21 @@ But you don't need to remember this formula. Just tune it in `~/.context-fabric/
 
 ```yaml
 ttl:
-  l3DecayDays: 30           # How many days before decay starts
+  l3DecayDays: 14           # How many days before decay starts (default)
   l3AccessThreshold: 3      # Minimum accesses to resist decay
+  l3DecayThreshold: 0.2     # Score below which memories are deleted
 ```
 
 **Making memories last longer:**
-- Increase `l3DecayDays` to 60 or 90 (more time before decay kicks in)
+- Increase `l3DecayDays` to 30 or 60 (more time before decay kicks in)
 - Lower `l3AccessThreshold` to 1 or 2 (easier to become "sticky")
+- Pin important memories: `context.update({ memoryId: "...", pinned: true })`
 
 **Making memories expire faster:**
-- Decrease `l3DecayDays` to 14 (aggressive cleanup)
+- Decrease `l3DecayDays` to 7 (aggressive cleanup)
 - Increase `l3AccessThreshold` to 5 (harder to become "sticky")
 
-To "save" an important memory from decay, access it periodically or promote it to L2 (which has no decay).
+To "save" an important memory from decay, pin it (`pinned: true`) or access it periodically.
 
 ### Can I use a different embedding model?
 
@@ -372,7 +374,7 @@ Compatible models must:
 - `Xenova/all-MiniLM-L12-v2` (384d) – Slightly better quality, slower
 - `Xenova/all-distilroberta-v1` (768d) – Higher quality, larger
 
-⚠️ **Warning:** Changing models after you have L3 memories will require regenerating all embeddings. Back up first!
+**Warning:** Changing models after you have L3 memories will require regenerating all embeddings. Back up first!
 
 ### How do I contribute?
 
@@ -482,7 +484,7 @@ SqliteError: unable to open database file
 | Search memories | `context.recall({ query: "how do we handle auth?" })` |
 | Start of session | `context.orient({ projectPath: "/path/to/project" })` |
 | List all decisions | `context.list({ type: "decision", layer: 2 })` |
-| Promote to L3 | `context.promote({ memoryId: "...", fromLayer: 2 })` |
+| Promote to L3 | `context.update({ memoryId: "...", targetLayer: 3 })` |
 | Auto-setup CLI | `context.setup({ cli: "cursor", useDocker: true })` |
 
 ---

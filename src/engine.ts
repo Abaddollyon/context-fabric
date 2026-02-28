@@ -15,6 +15,7 @@ import {
   CodePattern,
   Suggestion,
   FabricConfig,
+  RecallMode,
 } from './types.js';
 import { WorkingMemoryLayer } from './layers/working.js';
 import { ProjectMemoryLayer } from './layers/project.js';
@@ -42,6 +43,7 @@ export interface StoreOptions {
 export interface RecallOptions {
   limit?: number;
   layers?: MemoryLayer[];
+  mode?: RecallMode;
   filter?: {
     types?: MemoryType[];
     tags?: string[];
@@ -293,13 +295,34 @@ export class ContextEngine {
   }
 
   /**
-   * Semantic recall across all layers
+   * Normalize a BM25 score (negative in SQLite — lower = more relevant) to [0, 1].
+   * Uses 1 / (1 + |score|) which is monotonic and maps to [0, 1].
+   */
+  static normalizeBM25(score: number): number {
+    return 1 / (1 + Math.abs(score));
+  }
+
+  /**
+   * Recall across all layers. Supports three modes:
+   * - 'semantic' (default): L3 vector cosine, L2 substring LIKE, L1 substring
+   * - 'keyword': L2+L3 FTS5 BM25, L1 substring
+   * - 'hybrid': RRF fusion of keyword + semantic rankers (PR 3)
    */
   async recall(query: string, options: RecallOptions = {}): Promise<RankedMemory[]> {
     const limit = options.limit ?? 10;
+    const mode = options.mode ?? 'hybrid';
     const layers = options.layers ?? [MemoryLayer.L1_WORKING, MemoryLayer.L2_PROJECT, MemoryLayer.L3_SEMANTIC];
     const results: RankedMemory[] = [];
 
+    if (mode === 'keyword') {
+      return this.recallKeyword(query, limit, layers, options.filter);
+    }
+
+    if (mode === 'hybrid') {
+      return this.recallHybrid(query, limit, layers, options.filter);
+    }
+
+    // mode === 'semantic' (original behavior)
     // Search L3 (semantic) if included
     if (layers.includes(MemoryLayer.L3_SEMANTIC)) {
       try {
@@ -340,6 +363,178 @@ export class ContextEngine {
     return results
       .sort((a, b) => weightedSimilarity(b) - weightedSimilarity(a))
       .slice(0, limit);
+  }
+
+  /**
+   * Keyword-only recall using FTS5 BM25 on L2+L3, substring on L1.
+   */
+  private recallKeyword(
+    query: string,
+    limit: number,
+    layers: MemoryLayer[],
+    filter?: RecallOptions['filter'],
+  ): RankedMemory[] {
+    const results: RankedMemory[] = [];
+
+    // L2 keyword search
+    if (layers.includes(MemoryLayer.L2_PROJECT)) {
+      const l2BM25 = this.l2.searchBM25(query, limit);
+      for (const { memory, bm25Score } of l2BM25) {
+        if (this.matchesFilter(memory, filter)) {
+          results.push({
+            ...memory,
+            layer: MemoryLayer.L2_PROJECT,
+            similarity: ContextEngine.normalizeBM25(bm25Score),
+          });
+        }
+      }
+    }
+
+    // L3 keyword search
+    if (layers.includes(MemoryLayer.L3_SEMANTIC)) {
+      const l3BM25 = this.l3.searchBM25(query, limit);
+      for (const { memory, bm25Score } of l3BM25) {
+        if (this.matchesFilter(memory, filter)) {
+          results.push({
+            ...memory,
+            layer: MemoryLayer.L3_SEMANTIC,
+            similarity: ContextEngine.normalizeBM25(bm25Score),
+          });
+        }
+      }
+    }
+
+    // L1: substring fallback (no FTS/embeddings for ephemeral memory)
+    if (layers.includes(MemoryLayer.L1_WORKING)) {
+      const l1Results = this.l1.getAll();
+      for (const r of l1Results) {
+        if (r.content.toLowerCase().includes(query.toLowerCase()) && this.matchesFilter(r, filter)) {
+          results.push({ ...r, layer: MemoryLayer.L1_WORKING, similarity: 0.5 });
+        }
+      }
+    }
+
+    // Apply weight multiplier and sort
+    const weightedSimilarity = (m: RankedMemory) =>
+      m.similarity * ((m.metadata?.weight ?? 3) / 3);
+    return results
+      .sort((a, b) => weightedSimilarity(b) - weightedSimilarity(a))
+      .slice(0, limit);
+  }
+
+  /**
+   * Hybrid recall using Reciprocal Rank Fusion (RRF).
+   * Fuses two rankers — keyword (FTS5 BM25) and semantic (vector cosine) —
+   * then deduplicates and applies weight multipliers.
+   *
+   * RRF_score(d) = Σ 1/(k + rank_i(d))   where k=60, rank is 1-based
+   */
+  private async recallHybrid(
+    query: string,
+    limit: number,
+    layers: MemoryLayer[],
+    filter?: RecallOptions['filter'],
+  ): Promise<RankedMemory[]> {
+    const fetchLimit = limit * 2; // fetch more candidates for better fusion
+
+    // Ranker 1: Keyword (BM25)
+    const keywordResults = this.recallKeyword(query, fetchLimit, layers, filter);
+
+    // Ranker 2: Semantic (vector cosine) — only L3 contributes semantic scores
+    const semanticResults: RankedMemory[] = [];
+    if (layers.includes(MemoryLayer.L3_SEMANTIC)) {
+      try {
+        const l3Results = await this.l3.recall(query, fetchLimit);
+        for (const r of l3Results) {
+          if (this.matchesFilter(r, filter)) {
+            semanticResults.push({ ...r, layer: MemoryLayer.L3_SEMANTIC });
+          }
+        }
+      } catch (err) {
+        this.log('warn', 'L3 recall unavailable in hybrid mode:', err);
+      }
+    }
+
+    // Fuse with RRF
+    const fused = ContextEngine.fuseRRF(keywordResults, semanticResults, limit);
+
+    // Append L1 results after fusion (no FTS/embeddings, fixed similarity)
+    if (layers.includes(MemoryLayer.L1_WORKING)) {
+      const l1Results = this.l1.getAll();
+      for (const r of l1Results) {
+        if (r.content.toLowerCase().includes(query.toLowerCase()) && this.matchesFilter(r, filter)) {
+          // Only add if not already present from keyword ranker
+          if (!fused.some(f => f.id === r.id)) {
+            fused.push({ ...r, layer: MemoryLayer.L1_WORKING, similarity: 0.5 });
+          }
+        }
+      }
+    }
+
+    // Apply weight multiplier to final scores and re-sort
+    const weightedSimilarity = (m: RankedMemory) =>
+      m.similarity * ((m.metadata?.weight ?? 3) / 3);
+    return fused
+      .sort((a, b) => weightedSimilarity(b) - weightedSimilarity(a))
+      .slice(0, limit);
+  }
+
+  /**
+   * Reciprocal Rank Fusion: merge two ranked lists into one.
+   * RRF_score(d) = Σ 1/(k + rank_i(d))   where k=60 (Cormack et al.)
+   *
+   * Deduplicates by memory ID, keeping the version with higher original similarity.
+   */
+  static fuseRRF(
+    listA: RankedMemory[],
+    listB: RankedMemory[],
+    limit: number,
+    k = 60,
+  ): RankedMemory[] {
+    const scoreMap = new Map<string, { score: number; memory: RankedMemory }>();
+
+    // Score list A
+    for (let i = 0; i < listA.length; i++) {
+      const mem = listA[i];
+      const rrfScore = 1 / (k + i + 1); // rank is 1-based
+      const existing = scoreMap.get(mem.id);
+      if (existing) {
+        existing.score += rrfScore;
+        // Keep version with higher original similarity
+        if (mem.similarity > existing.memory.similarity) {
+          existing.memory = mem;
+        }
+      } else {
+        scoreMap.set(mem.id, { score: rrfScore, memory: mem });
+      }
+    }
+
+    // Score list B
+    for (let i = 0; i < listB.length; i++) {
+      const mem = listB[i];
+      const rrfScore = 1 / (k + i + 1);
+      const existing = scoreMap.get(mem.id);
+      if (existing) {
+        existing.score += rrfScore;
+        if (mem.similarity > existing.memory.similarity) {
+          existing.memory = mem;
+        }
+      } else {
+        scoreMap.set(mem.id, { score: rrfScore, memory: mem });
+      }
+    }
+
+    // Sort by RRF score descending
+    const sorted = Array.from(scoreMap.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+
+    // Normalize scores to [0, 1] so threshold filtering remains meaningful
+    const maxScore = sorted.length > 0 ? sorted[0].score : 1;
+    return sorted.map(({ score, memory }) => ({
+      ...memory,
+      similarity: maxScore > 0 ? score / maxScore : 0,
+    }));
   }
 
   /**

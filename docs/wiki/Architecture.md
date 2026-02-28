@@ -80,7 +80,7 @@ Context Fabric uses a hierarchical memory architecture inspired by human memory 
 | **Scope** | Single session | Per-project | Cross-project |
 | **Storage** | In-memory Map | SQLite file | SQLite file |
 | **Lifetime** | TTL-based (default 1h) | Permanent | Decay-based (14 days) |
-| **Search** | Exact match | Full-text LIKE | Cosine similarity |
+| **Search** | Substring match | FTS5 BM25 + LIKE | FTS5 BM25 + Vector cosine |
 | **Capacity** | 1000 entries (configurable) | Unlimited | Unlimited |
 | **Eviction** | LRU + TTL | None (explicit delete) | Decay algorithm |
 
@@ -161,13 +161,32 @@ CREATE TABLE IF NOT EXISTS memories (
   updated_at INTEGER NOT NULL,
   access_count INTEGER DEFAULT 0,
   last_accessed_at INTEGER,
-  pinned INTEGER NOT NULL DEFAULT 0  -- v0.5.5: exempt from decay/summarization
+  pinned INTEGER NOT NULL DEFAULT 0  -- v0.5.5: exempt from summarization
 );
 
 -- Indexes for performance
 CREATE INDEX idx_type ON memories(type);
 CREATE INDEX idx_created ON memories(created_at);
 CREATE INDEX idx_pinned ON memories(pinned);
+
+-- FTS5 full-text search (v0.7, external content mode — no data duplication)
+CREATE VIRTUAL TABLE memories_fts USING fts5(
+  content, type,
+  content='memories', content_rowid='rowid',
+  tokenize='porter unicode61'
+);
+
+-- Triggers keep FTS in sync with the content table
+CREATE TRIGGER memories_fts_insert AFTER INSERT ON memories BEGIN
+  INSERT INTO memories_fts(rowid, content, type) VALUES (NEW.rowid, NEW.content, NEW.type);
+END;
+CREATE TRIGGER memories_fts_delete AFTER DELETE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, content, type) VALUES('delete', OLD.rowid, OLD.content, OLD.type);
+END;
+CREATE TRIGGER memories_fts_update AFTER UPDATE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, content, type) VALUES('delete', OLD.rowid, OLD.content, OLD.type);
+  INSERT INTO memories_fts(rowid, content, type) VALUES (NEW.rowid, NEW.content, NEW.type);
+END;
 
 -- Tag relationships (many-to-many)
 CREATE TABLE IF NOT EXISTS memory_tags (
@@ -208,6 +227,16 @@ private prepareStatements(): void {
   this.stmtSearch = this.db.prepare(
     'SELECT * FROM memories WHERE content LIKE ? ORDER BY created_at DESC'
   );
+
+  // FTS5 BM25-ranked keyword search (v0.7)
+  this.stmtSearchBM25 = this.db.prepare(`
+    SELECT m.*, fts.rank AS bm25_score
+    FROM memories_fts AS fts
+    JOIN memories AS m ON m.rowid = fts.rowid
+    WHERE memories_fts MATCH ?
+    ORDER BY fts.rank
+    LIMIT ?
+  `);
 }
 ```
 
@@ -248,6 +277,15 @@ CREATE TABLE IF NOT EXISTS semantic_memories (
 CREATE INDEX idx_sem_type ON semantic_memories(type);
 CREATE INDEX idx_sem_relevance ON semantic_memories(relevance_score);
 CREATE INDEX idx_sem_pinned ON semantic_memories(pinned);
+
+-- FTS5 full-text search (v0.7, external content mode)
+CREATE VIRTUAL TABLE semantic_fts USING fts5(
+  content, type,
+  content='semantic_memories', content_rowid='rowid',
+  tokenize='porter unicode61'
+);
+
+-- Same trigger pattern as L2 for insert/delete/update sync
 ```
 
 #### Vector Search Flow
@@ -552,7 +590,114 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 ---
 
-## 6. Decay Algorithm
+## 6. Hybrid Search
+
+Added in v0.7.0. `context.recall` supports three search modes, with hybrid as the default. This combines FTS5 keyword search with vector cosine similarity using Reciprocal Rank Fusion.
+
+### Three Recall Modes
+
+| Mode | L1 | L2 | L3 | Default |
+|------|:--:|:--:|:--:|:-------:|
+| **semantic** | Substring | `LIKE '%query%'` | Vector cosine | |
+| **keyword** | Substring | FTS5 BM25 | FTS5 BM25 | |
+| **hybrid** | Substring | FTS5 BM25 via RRF | FTS5 BM25 + Vector cosine via RRF | Yes |
+
+L1 always uses substring matching — it's in-memory with no FTS or embeddings.
+
+### FTS5 Implementation
+
+Both L2 and L3 have FTS5 virtual tables using the `porter unicode61` tokenizer (stemming + Unicode normalization). They use external content mode — the virtual table stores no data, reading from the main table via rowid. Triggers keep the FTS index in sync on every INSERT, DELETE, and UPDATE.
+
+The `searchBM25()` method on both layers runs a JOIN between the FTS table and the content table, ordering by BM25 rank:
+
+```sql
+SELECT m.*, fts.rank AS bm25_score
+FROM memories_fts AS fts
+JOIN memories AS m ON m.rowid = fts.rowid
+WHERE memories_fts MATCH ?
+ORDER BY fts.rank  -- lower = more relevant in SQLite's BM25 convention
+LIMIT ?
+```
+
+BM25 scores in SQLite are negative (lower = more relevant). The engine normalizes them to [0, 1] using:
+
+```typescript
+static normalizeBM25(score: number): number {
+  return 1 / (1 + Math.abs(score));
+}
+```
+
+### Reciprocal Rank Fusion (RRF)
+
+In hybrid mode, two independent rankers produce candidate lists:
+
+1. **Keyword ranker**: FTS5 BM25 on L2 + L3
+2. **Semantic ranker**: Vector cosine similarity on L3
+
+The lists are fused using RRF (Cormack et al.):
+
+```
+RRF_score(d) = sum( 1 / (k + rank_i(d)) )   where k=60, rank is 1-based
+```
+
+Implementation details:
+- Over-fetches `limit * 2` from each ranker for better fusion quality
+- Deduplicates by memory ID, keeping the version with higher original similarity
+- Normalizes final scores to [0, 1] (top result = 1.0, rest proportional)
+- Applies weight multiplier after fusion: `score * (weight / 3)`
+
+```typescript
+static fuseRRF(
+  listA: RankedMemory[],   // keyword results
+  listB: RankedMemory[],   // semantic results
+  limit: number,
+  k = 60,
+): RankedMemory[] {
+  const scoreMap = new Map<string, { score: number; memory: RankedMemory }>();
+
+  for (let i = 0; i < listA.length; i++) {
+    const rrfScore = 1 / (k + i + 1);
+    // accumulate + deduplicate by ID
+  }
+  for (let i = 0; i < listB.length; i++) {
+    const rrfScore = 1 / (k + i + 1);
+    // accumulate + deduplicate by ID
+  }
+
+  // Sort by RRF score, take top limit
+  // Normalize to [0, 1]: score / maxScore
+  return sorted.map(({ score, memory }) => ({
+    ...memory,
+    similarity: score / maxScore,
+  }));
+}
+```
+
+The normalization ensures threshold filtering (default 0.7 in `context.recall`) remains meaningful regardless of mode.
+
+### Data Flow (Hybrid Mode)
+
+```
+context.recall("auth middleware", mode="hybrid")
+     │
+     ├──▶ Keyword Ranker
+     │      ├── L2: searchBM25("auth middleware") → BM25 results
+     │      └── L3: searchBM25("auth middleware") → BM25 results
+     │
+     ├──▶ Semantic Ranker
+     │      └── L3: recall("auth middleware") → cosine results
+     │
+     └──▶ RRF Fusion
+            ├── Score each doc: sum(1/(60 + rank))
+            ├── Deduplicate by memory ID
+            ├── Normalize to [0, 1]
+            ├── Apply weight multiplier
+            └── Return top N results
+```
+
+---
+
+## 7. Decay Algorithm
 
 L3 memories use a time-based decay mechanism to gradually remove stale, unaccessed entries.
 
@@ -603,11 +748,20 @@ async applyDecay(): Promise<number> {
 
 ### Decay Schedule
 
-```typescript
-// Called on:
-// 1. Every `context.orient` call (session start)
-// 2. Hourly interval when engine is active
+Decay runs on two triggers:
 
+1. **`context.orient` call** — fire-and-forget at session start. Non-blocking (uses `.then()` so the orient response returns immediately).
+2. **Hourly interval** — `setInterval` while the engine is active.
+
+```typescript
+// Trigger 1: Fire-and-forget on orient()
+this.l3.applyDecay().then((pruned) => {
+  if (pruned > 0) this.log('debug', `orient: pruned ${pruned} stale L3 memories`);
+}).catch((err) => {
+  this.log('warn', 'orient: L3 decay failed:', err);
+});
+
+// Trigger 2: Hourly interval
 private startDecayInterval(): void {
   this.cleanupIntervalId = setInterval(async () => {
     const affected = await this.l3.applyDecay();
@@ -640,7 +794,7 @@ Relevance Score
 
 ---
 
-## 7. Context Window Construction
+## 8. Context Window Construction
 
 The `getContextWindow()` method assembles relevant context for CLI injection.
 
@@ -701,6 +855,16 @@ async getContextWindow(cliCapabilities?: CLICapability): Promise<ContextWindow> 
 }
 ```
 
+**Weight multiplier**: The `metadata.weight` field (integer 1-5, default 3) scales relevance scores during ranking. L2 memories start with a base score of `0.8`, L3 memories use their cosine similarity. Both are multiplied by `weight / 3`:
+
+| Weight | Multiplier | Effect |
+|:------:|:----------:|:-------|
+| 5 | 1.67x | Critical — surfaces above everything |
+| 4 | 1.33x | Important |
+| 3 | 1.0x | Neutral (default) |
+| 2 | 0.67x | Low priority |
+| 1 | 0.33x | Near-throwaway |
+
 ### Context Window Structure
 
 ```typescript
@@ -724,7 +888,7 @@ interface GhostMessage {
 
 ---
 
-## 8. Event Handling
+## 9. Event Handling
 
 CLI events trigger automatic memory capture.
 
@@ -800,7 +964,67 @@ async handleErrorOccurred(error: string, context?: string): Promise<EventResult>
 
 ---
 
-## 9. Data Flow
+## 10. Code Indexer
+
+The Code Indexer (`src/indexer/code-index.ts`) provides source code search via `context.searchCode`. It is lazily initialized on first use and shares the L3 embedding service to avoid loading the ONNX model twice.
+
+### Search Modes
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| **text** | Full-text search across file contents | Find specific strings or patterns |
+| **symbol** | Find functions, classes, interfaces, types by name | Navigate to definitions |
+| **semantic** | Natural-language embedding similarity | "how does memory get promoted" |
+
+### How It Works
+
+1. **Indexing**: On first `searchCode` call (or `context.orient`), the indexer scans the project directory
+2. **Chunking**: Files are split into chunks (default 150 lines, 10-line overlap) for granular results
+3. **Symbol extraction**: Parses source files to extract function, class, interface, type, enum, const, and export declarations
+4. **Embedding**: For semantic mode, chunks are embedded using the same ONNX model as L3
+5. **File watching**: Optional file watcher re-indexes changed files automatically
+
+### Configuration
+
+```yaml
+codeIndex:
+  enabled: true
+  maxFileSizeBytes: 1048576  # 1MB
+  maxFiles: 10000
+  chunkLines: 150
+  chunkOverlap: 10
+  debounceMs: 500
+  watchEnabled: true
+  excludePatterns: []
+```
+
+### Initialization
+
+The code index is created lazily and updated incrementally on each `context.orient` call:
+
+```typescript
+// Lazy initialization (engine.ts)
+getCodeIndex(): CodeIndex {
+  if (!this.codeIndex) {
+    this.codeIndex = new CodeIndex({
+      projectPath: this.projectPath,
+      embeddingService: this.l3.getEmbeddingService(),  // shared model
+      config: this.config.codeIndex,
+    });
+  }
+  return this.codeIndex;
+}
+
+// Fire-and-forget update on orient()
+if (this.config.codeIndex.enabled) {
+  const idx = this.getCodeIndex();
+  idx.ensureReady().then(() => idx.incrementalUpdate());
+}
+```
+
+---
+
+## 11. Data Flow
 
 ### Storage Flow
 
@@ -826,39 +1050,39 @@ User/AI ──store()──▶ ContextEngine
     └─────────────────────────────────────────┘
 ```
 
-### Retrieval Flow
+### Retrieval Flow (Hybrid Mode — Default)
 
 ```
-User/AI ──recall()──▶ ContextEngine
-                           │
-          ┌────────────────┼────────────────┐
-          ▼                ▼                ▼
-     L1 Search      L2 Full-text      L3 Semantic
-     (substring)    (LIKE query)      (cosine sim)
-          │                │                │
-          │           ┌────┴────┐      ┌────┴────┐
-          │           ▼         ▼      ▼         ▼
-          │      ┌────────┐ ┌────────┐  ┌───────────┐
-          │      │SELECT  │ │SELECT  │  │Embed query│
-          │      │* FROM  │ │* FROM  │  │──────────▶│
-          │      │memories│ │memories│  │Fetch all  │
-          │      │WHERE   │ │WHERE   │  │Compute sim│
-          │      │content │ │type = ?│  │Sort DESC  │
-          │      │LIKE ?  │ │        │  │Return top │
-          │      └────┬───┘ └────┬───┘  └─────┬─────┘
-          │           └────┬─────┘            │
-          ▼                ▼                  ▼
-    ┌─────────────────────────────────────────────────┐
-    │              Merge & Rank Results                │
-    │  - Weight-adjusted similarity                    │
-    │  - Layer annotation                              │
-    │  - Limit to requested count                      │
-    └─────────────────────────────────────────────────┘
+User/AI ──recall(query, mode="hybrid")──▶ ContextEngine
+                                              │
+                    ┌─────────────────────────┼─────────────────────────┐
+                    ▼                         ▼                         ▼
+             L1 Substring              Keyword Ranker             Semantic Ranker
+             (fallback)                    │                           │
+                    │              ┌───────┴───────┐                  │
+                    │              ▼               ▼                  ▼
+                    │        L2 FTS5 BM25    L3 FTS5 BM25       L3 Vector
+                    │        (memories_fts)  (semantic_fts)      (cosine sim)
+                    │              │               │                  │
+                    │              └───────┬───────┘                  │
+                    │                      ▼                          ▼
+                    │              ┌─────────────────────────────────────┐
+                    │              │     Reciprocal Rank Fusion (RRF)    │
+                    │              │  score(d) = sum(1/(60 + rank_i(d))) │
+                    │              │  Deduplicate → Normalize to [0,1]  │
+                    │              └─────────────────┬───────────────────┘
+                    │                                │
+                    ▼                                ▼
+              ┌──────────────────────────────────────────────┐
+              │           Merge & Weight-Adjust              │
+              │  score * (metadata.weight / 3)               │
+              │  Sort DESC → Limit to requested count        │
+              └──────────────────────────────────────────────┘
 ```
 
 ---
 
-## 10. Performance
+## 12. Performance
 
 ### Memory Usage
 
@@ -877,9 +1101,12 @@ User/AI ──recall()──▶ ContextEngine
 | L1 get by ID | <0.1ms | <0.1ms | Map lookup O(1) |
 | L1 get all | <1ms | <5ms | 1000 entries max |
 | L2 get by ID | <1ms | <5ms | Indexed lookup |
-| L2 search (LIKE) | <10ms | <100ms | Depends on DB size |
+| L2 LIKE search | <10ms | <100ms | Full table scan |
+| L2 FTS5 BM25 | <5ms | <20ms | Inverted index O(log N) |
 | L3 get by ID | <1ms | <5ms | Indexed lookup |
-| L3 semantic search | <100ms | <500ms | O(N) similarity calc |
+| L3 FTS5 BM25 | <5ms | <20ms | Inverted index O(log N) |
+| L3 semantic search | <100ms | <500ms | O(N) cosine similarity |
+| Hybrid recall (RRF) | <120ms | <600ms | Both rankers + fusion |
 | Embedding generation | 50-100ms | 200ms | Cold vs cached |
 | Context window build | <200ms | <500ms | All layers + ranking |
 
@@ -906,11 +1133,12 @@ L3 Semantic Memory:
 
 | Bottleneck | Impact | Mitigation |
 |------------|--------|------------|
-| **L3 brute-force search** | O(N) scan all memories | Current: acceptable for <5K memories. Future: vector index (HNSW) |
+| **L3 brute-force search** | O(N) scan all memories | Acceptable for <5K memories. FTS5 keyword mode avoids this entirely. |
+| **Hybrid mode overhead** | Runs both rankers | ~10-20ms over pure semantic. Over-fetch (`limit*2`) improves fusion quality. |
 | **Embedding cold start** | ~80MB model load | Pre-warm in Docker; shared instance |
 | **SQLite concurrency** | Write locking | WAL mode enabled; mostly read-heavy |
 | **Memory growth (L1)** | Unbounded growth | LRU eviction at 1000 entries |
-| **Decay overhead** | Hourly full table scan | Pinned filter; async operation |
+| **Decay overhead** | Hourly full table scan | Pinned filter; async fire-and-forget |
 
 ### Optimization Strategies
 
@@ -991,4 +1219,4 @@ interface MemoryMetadata {
 
 ---
 
-*This architecture documentation covers Context Fabric v0.5.x. For the latest updates, see the [CHANGELOG](../CHANGELOG.md).*
+*This architecture documentation covers Context Fabric through v0.7.1. For the latest updates, see the [CHANGELOG](../CHANGELOG.md).*

@@ -44,7 +44,7 @@ ttl:
   l1Default: 3600          # 1 hour
 
   # L3 decay period — memories unused for this long start losing relevance
-  l3DecayDays: 30
+  l3DecayDays: 14
 
   # Minimum access count for L3 memories to resist decay
   l3AccessThreshold: 3
@@ -88,7 +88,7 @@ Environment variables override config file values. Useful for Docker deployments
 | `FASTEMBED_CACHE_PATH` | *(auto)* | ONNX model cache directory (set automatically by Docker image) |
 | `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `L1_DEFAULT_TTL` | `3600` | L1 working memory TTL in seconds |
-| `L3_DECAY_DAYS` | `30` | L3 decay period in days |
+| `L3_DECAY_DAYS` | `14` | L3 decay period in days |
 
 > [!TIP]
 > Set `LOG_LEVEL=debug` to see detailed routing decisions, embedding operations, and layer queries. Useful for troubleshooting.
@@ -146,7 +146,7 @@ docker run --rm -v context-fabric-data:/data alpine tar czf - /data \
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `l1Default` | number | `3600` | Default TTL for L1 memories (seconds) |
-| `l3DecayDays` | number | `30` | Days before L3 memories start decaying |
+| `l3DecayDays` | number | `14` | Days before L3 memories start decaying |
 | `l3AccessThreshold` | number | `3` | Minimum access count to resist L3 decay |
 
 ### `embedding`

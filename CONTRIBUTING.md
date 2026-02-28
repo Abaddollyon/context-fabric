@@ -24,7 +24,7 @@ npm run test:coverage     # with coverage report
 npm run test:watch        # watch mode
 ```
 
-All 253 tests should pass before submitting a PR.
+All tests should pass before submitting a PR (currently 588 tests across 18 test files).
 
 ## Code Style
 
@@ -35,7 +35,7 @@ All 253 tests should pass before submitting a PR.
 
 ## Submitting a PR
 
-1. Fork the repo and create a branch from `main`
+1. Fork the repo and create a branch from `master`
 2. Make your changes
 3. Add or update tests for any new functionality
 4. Run `npm test` and make sure everything passes

@@ -2,12 +2,13 @@
 # https://smithery.ai/docs/registry/smithery-yaml
 
 name: context-fabric
-version: 0.6.0
+version: 0.7.1
 description: |
   MCP server for agentic CLI memory and time-aware orientation. Provides semantic
   context management across sessions with a three-layer memory architecture
-  (working, project, semantic) and a built-in time engine with IANA timezone
-  support, natural-language date anchors, and offline-gap detection.
+  (working, project, semantic), hybrid search (FTS5 BM25 + vector cosine + RRF),
+  and a built-in time engine with IANA timezone support, natural-language date
+  anchors, and offline-gap detection.
 
   Integrates with Kimi, Claude Code, OpenCode, Codex, Gemini CLI, Cursor, and more.
   Runs locally (Node.js 22.5+) or via Docker (cross-platform, zero host dependencies).
@@ -60,34 +61,22 @@ env:
 
 tools:
   - name: context.getCurrent
-    description: Get current context window for a session (working memories, relevant memories, patterns, suggestions, ghost messages)
+    description: Get current context window for a session (working memories, relevant memories, patterns, suggestions, ghost messages). Supports language/filePath filters for patterns.
 
   - name: context.store
     description: Store a memory — code pattern, bug fix, decision, convention, scratchpad, or relationship. SmartRouter auto-selects the layer.
 
   - name: context.recall
-    description: Recall semantically similar memories by meaning, not just keywords. Searches all layers by default.
-
-  - name: context.time
-    description: Get the current time as a rich TimeAnchor with UTC offset, day/week boundaries, and ISO week number. Resolve natural-language date expressions or show the same moment in multiple timezones.
+    description: "Hybrid search across all memory layers. Three modes: hybrid (FTS5+vector+RRF, default), semantic (vector-only), keyword (FTS5 BM25-only)."
 
   - name: context.orient
-    description: "Orientation loop — answers: Where am I in time? What happened while I was offline? What project am I in? Returns a summary, offline gap, and recent memories."
+    description: "Orientation loop — answers: Where am I in time? What happened while I was offline? What project am I in? Also resolves date expressions and provides world-clock conversions."
 
   - name: context.summarize
     description: Condense old memories into a summary entry to keep context lean.
 
-  - name: context.getPatterns
-    description: Get relevant code patterns for the current context, optionally filtered by language or file.
-
   - name: context.reportEvent
     description: Report CLI events (file opened, command executed, error occurred, etc.) for automatic memory capture.
-
-  - name: context.ghost
-    description: Get ghost messages — invisible context injections that provide relevant background without cluttering the conversation.
-
-  - name: context.promote
-    description: Promote a memory to a higher layer (L1→L2, L2→L3) to increase its persistence and scope.
 
   - name: context.searchCode
     description: Search the project's source code index. Supports text, symbol, and semantic search modes. Index is built automatically on first use.
@@ -96,13 +85,13 @@ tools:
     description: Get a specific memory by its ID. Searches across all layers (L1→L2→L3).
 
   - name: context.update
-    description: Update an existing memory's content, metadata, or tags. L3 memories are re-embedded only if content changes.
+    description: "Update an existing memory's content, metadata, tags, weight, or pinned status. Use targetLayer to promote to a higher layer (L1→L2, L2→L3)."
 
   - name: context.delete
     description: Delete a memory by its ID. Searches across all layers and deletes from whichever layer it lives in.
 
   - name: context.list
-    description: List and browse memories with optional filters (type, tags). Supports pagination. Defaults to L2 (project) memories.
+    description: "List and browse memories with optional filters (type, tags). Supports pagination. Use stats: true to get memory store counts per layer."
 
   - name: context.setup
     description: Install and configure Context Fabric into any supported CLI's MCP config. Writes the config file automatically. Supports local (node) and Docker transports.
@@ -112,13 +101,16 @@ documentation:
 
   features:
     - Three-layer memory architecture (L1 working/RAM, L2 project/SQLite, L3 semantic/SQLite+cosine)
+    - "Hybrid search: FTS5 BM25 + vector cosine similarity, fused with Reciprocal Rank Fusion (RRF)"
     - Time engine with IANA timezone support, natural-language date anchors, offline-gap detection
     - Orientation loop — session-start summary of time, project, and what changed while offline
-    - Automatic context injection via ghost messages
+    - Automatic context injection via ghost messages (in getCurrent response)
     - Semantic search with fastembed-js ONNX embeddings (all-MiniLM-L6-v2)
     - Pattern detection and storage
     - Event-driven memory capture
     - Smart routing — auto-selects the optimal layer for each memory
+    - Memory weighting (1-5) for priority-based recall
+    - Pinned memories — exempt from decay and summarization
     - Self-installing — AI calls context.setup to configure any supported CLI
     - Docker transport — cross-platform stdio bridge, no host runtime required
     - Zero native dependencies — uses Node.js built-in node:sqlite
@@ -134,6 +126,8 @@ tags:
   - semantic-search
   - embeddings
   - docker
+  - hybrid-search
+  - fts5
 
 categories:
   - memory
