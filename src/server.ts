@@ -62,6 +62,8 @@ const RecallSchema = z.object({
   query: z.string().min(1),
   limit: z.number().int().positive().default(10),
   threshold: z.number().min(0).max(1).default(0.7),
+  mode: z.enum(["semantic", "keyword", "hybrid"]).default("hybrid")
+    .describe("Search mode: 'semantic' (vector cosine), 'keyword' (FTS5 BM25), or 'hybrid' (RRF fusion of both). Default: hybrid."),
   filter: z.object({
     types: z.array(z.enum(["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"])).optional(),
     layers: z.array(z.number().int().min(1).max(3)).optional(),
@@ -76,6 +78,10 @@ const GetCurrentContextSchema = z.object({
   currentFile: z.string().optional(),
   currentCommand: z.string().optional(),
   projectPath: z.string().optional(),
+  language: z.string().optional()
+    .describe("Filter patterns by language (e.g. 'typescript', 'python')."),
+  filePath: z.string().optional()
+    .describe("Filter patterns by file path."),
 });
 
 const SummarizeSchema = z.object({
@@ -91,12 +97,6 @@ const SummarizeSchema = z.object({
   projectPath: z.string().optional(),
 });
 
-const GetPatternsSchema = z.object({
-  language: z.string().optional(),
-  filePath: z.string().optional(),
-  limit: z.number().int().positive().default(5),
-  projectPath: z.string().optional(),
-});
 
 const ReportEventSchema = z.object({
   event: z.object({
@@ -118,27 +118,14 @@ const ReportEventSchema = z.object({
   }),
 });
 
-const GhostSchema = z.object({
-  sessionId: z.string(),
-  trigger: z.string(),
-  currentContext: z.string(),
-  projectPath: z.string().optional(),
-});
-
-const PromoteMemorySchema = z.object({
-  memoryId: z.string(),
-  fromLayer: z.number().int().min(1).max(2),
-});
-
-const TimeSchema = z.object({
-  timezone: z.string().optional(),
-  expression: z.string().optional(),
-  also: z.array(z.string()).optional(),
-});
 
 const OrientSchema = z.object({
   timezone: z.string().optional(),
   projectPath: z.string().optional(),
+  expression: z.string().optional()
+    .describe("Optional date expression to resolve: 'now', 'today', 'yesterday', 'tomorrow', 'start of day', 'end of day', 'start of week', 'end of week', 'start of next week', 'next Monday' … 'next Sunday', 'last Monday' … 'last Sunday', an ISO date string, or an epoch-ms number."),
+  also: z.array(z.string()).optional()
+    .describe("Additional IANA timezone names to show the same moment in (world clock)."),
 });
 
 const SetupSchema = z.object({
@@ -174,6 +161,8 @@ const UpdateMemorySchema = z.object({
     .describe('Update the memory weight (1–5)'),
   pinned: z.boolean().optional()
     .describe('Pin (true) or unpin (false) this memory. Pinned memories are exempt from decay and summarization.'),
+  targetLayer: z.number().int().min(2).max(3).optional()
+    .describe('Promote memory to this layer (2=project, 3=semantic). Triggers promote logic: copies to new layer and deletes from old.'),
   projectPath: z.string().optional(),
 });
 
@@ -188,12 +177,11 @@ const ListMemoriesSchema = z.object({
   tags: z.array(z.string()).optional(),
   limit: z.number().int().positive().default(20),
   offset: z.number().int().min(0).default(0),
+  stats: z.boolean().optional()
+    .describe('If true, return memory store summary (counts per layer, pinned counts, L2 breakdown by type) instead of listing memories.'),
   projectPath: z.string().optional(),
 });
 
-const StatsSchema = z.object({
-  projectPath: z.string().optional(),
-});
 
 // ============================================================================
 // Tool Definitions
@@ -202,7 +190,7 @@ const StatsSchema = z.object({
 const TOOLS: Tool[] = [
   {
     name: "context.getCurrent",
-    description: "Get the current context window for a session, including working memories, relevant memories, patterns, and suggestions.",
+    description: "Get the current context window for a session, including working memories, relevant memories, patterns, suggestions, and ghost messages (hidden context injections from past sessions).",
     inputSchema: {
       type: "object",
       properties: {
@@ -210,6 +198,8 @@ const TOOLS: Tool[] = [
         currentFile: { type: "string", description: "Currently open file path" },
         currentCommand: { type: "string", description: "Current command being executed" },
         projectPath: { type: "string", description: "Project path for context" },
+        language: { type: "string", description: "Filter patterns by language (e.g. 'typescript', 'python')" },
+        filePath: { type: "string", description: "Filter patterns by file path" },
       },
       required: ["sessionId"],
     },
@@ -267,13 +257,19 @@ const TOOLS: Tool[] = [
   },
   {
     name: "context.recall",
-    description: "Recall memories semantically similar to the query. Returns ranked results with similarity scores. Searches across all layers by default.",
+    description: "Recall memories by hybrid search (FTS5 keyword + vector semantic, fused with Reciprocal Rank Fusion). Supports three modes: 'hybrid' (default, best quality), 'semantic' (vector-only), 'keyword' (FTS5 BM25-only). Searches across all layers.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Search query" },
         limit: { type: "number", default: 10 },
         threshold: { type: "number", default: 0.7, description: "Minimum similarity score (0-1)" },
+        mode: {
+          type: "string",
+          enum: ["semantic", "keyword", "hybrid"],
+          default: "hybrid",
+          description: "Search mode: 'hybrid' (default, RRF fusion of BM25 + vector), 'semantic' (vector cosine only), or 'keyword' (FTS5 BM25 only).",
+        },
         filter: {
           type: "object",
           properties: {
@@ -313,19 +309,6 @@ const TOOLS: Tool[] = [
     },
   },
   {
-    name: "context.getPatterns",
-    description: "Get relevant code patterns for the current context, optionally filtered by language or file.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        language: { type: "string" },
-        filePath: { type: "string" },
-        limit: { type: "number", default: 5 },
-        projectPath: { type: "string" },
-      },
-    },
-  },
-  {
     name: "context.reportEvent",
     description: "Report an event from the CLI (file opened, command executed, error occurred, etc.). Used for automatic memory capture.",
     inputSchema: {
@@ -351,56 +334,8 @@ const TOOLS: Tool[] = [
     },
   },
   {
-    name: "context.ghost",
-    description: "Get ghost messages (hidden context) for the current situation. These are invisible context injections that provide relevant background.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        sessionId: { type: "string" },
-        trigger: { type: "string", description: "What triggered the ghost request" },
-        currentContext: { type: "string", description: "Current context description" },
-        projectPath: { type: "string" },
-      },
-      required: ["sessionId", "trigger", "currentContext"],
-    },
-  },
-  {
-    name: "context.promote",
-    description: "Promote a memory to a higher layer (L1→L2, L2→L3). This upgrades its persistence and scope.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        memoryId: { type: "string", description: "ID of the memory to promote" },
-        fromLayer: { type: "number", description: "Current layer of the memory (1 or 2)" },
-      },
-      required: ["memoryId", "fromLayer"],
-    },
-  },
-  {
-    name: "context.time",
-    description: "Get the current time as a rich TimeAnchor (local time, UTC offset, day boundaries, week number). Optionally resolve a natural-language date expression ('tomorrow', 'next Monday', 'end of day', etc.) or show the same moment in multiple timezones.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        timezone: {
-          type: "string",
-          description: "IANA timezone name (e.g. 'America/New_York'). Defaults to the system timezone.",
-        },
-        expression: {
-          type: "string",
-          description: "Optional date expression to resolve: 'now', 'today', 'yesterday', 'tomorrow', 'start of day', 'end of day', 'start of week', 'end of week', 'start of next week', 'next Monday' … 'next Sunday', 'last Monday' … 'last Sunday', an ISO date string, or an epoch-ms number.",
-        },
-        also: {
-          type: "array",
-          items: { type: "string" },
-          description: "Additional IANA timezone names to show the same moment in (world clock).",
-        },
-      },
-    },
-  },
-  {
     name: "context.orient",
-    description: "Orientation loop: 'Where am I in time? What happened while I was offline? What project am I in?' Returns a TimeAnchor, the gap since the last session, and memories added while offline.",
+    description: "Orientation loop: 'Where am I in time? What happened while I was offline? What project am I in?' Returns a TimeAnchor, the gap since the last session, and memories added while offline. Can also resolve date expressions and show world clock conversions.",
     inputSchema: {
       type: "object",
       properties: {
@@ -411,6 +346,15 @@ const TOOLS: Tool[] = [
         projectPath: {
           type: "string",
           description: "Project path. Defaults to the current working directory.",
+        },
+        expression: {
+          type: "string",
+          description: "Optional date expression to resolve: 'now', 'today', 'yesterday', 'tomorrow', 'start of day', 'end of day', 'start of week', 'end of week', 'start of next week', 'next Monday' … 'next Sunday', 'last Monday' … 'last Sunday', an ISO date string, or an epoch-ms number.",
+        },
+        also: {
+          type: "array",
+          items: { type: "string" },
+          description: "Additional IANA timezone names to show the same moment in (world clock).",
         },
       },
     },
@@ -457,7 +401,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "context.update",
-    description: "Update an existing memory's content, metadata, or tags. L1 memories cannot be updated (they are ephemeral). L3 memories are re-embedded only if content changes.",
+    description: "Update an existing memory's content, metadata, or tags. L1 memories cannot be updated (they are ephemeral). L3 memories are re-embedded only if content changes. Use targetLayer to promote a memory to a higher layer (L1→L2, L2→L3).",
     inputSchema: {
       type: "object",
       properties: {
@@ -467,6 +411,7 @@ const TOOLS: Tool[] = [
         tags: { type: "array", items: { type: "string" }, description: "New tags array (replaces existing tags)" },
         weight: { type: "number", description: "Update the memory weight (1–5)" },
         pinned: { type: "boolean", description: "Pin (true) or unpin (false) this memory. Pinned memories are exempt from decay and summarization." },
+        targetLayer: { type: "number", description: "Promote memory to this layer (2=project, 3=semantic). Triggers promote logic: copies to new layer and deletes from old." },
         projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
       },
       required: ["memoryId"],
@@ -486,7 +431,7 @@ const TOOLS: Tool[] = [
   },
   {
     name: "context.list",
-    description: "List and browse memories with optional filters. Supports pagination. Defaults to L2 (project) memories.",
+    description: "List and browse memories with optional filters. Supports pagination. Defaults to L2 (project) memories. Use stats=true to get a summary of the memory store (counts per layer, pinned counts, L2 breakdown by type) instead of listing memories.",
     inputSchema: {
       type: "object",
       properties: {
@@ -499,16 +444,7 @@ const TOOLS: Tool[] = [
         tags: { type: "array", items: { type: "string" }, description: "Filter by tags (OR logic)" },
         limit: { type: "number", default: 20, description: "Maximum results to return (default: 20)" },
         offset: { type: "number", default: 0, description: "Offset for pagination (default: 0)" },
-        projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
-      },
-    },
-  },
-  {
-    name: "context.stats",
-    description: "Get a summary of the memory store: total counts per layer, pinned counts, and L2 breakdown by type. Use this for a quick health check without scrolling through context.list.",
-    inputSchema: {
-      type: "object",
-      properties: {
+        stats: { type: "boolean", description: "If true, return memory store summary (counts per layer, pinned counts, L2 breakdown by type) instead of listing memories." },
         projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
       },
     },
@@ -575,15 +511,6 @@ function getEngine(projectPath?: string): ContextEngine {
   return engines.get(path)!;
 }
 
-/**
- * Get default engine
- */
-function getDefaultEngine(): ContextEngine {
-  if (!defaultEngine) {
-    return getEngine();
-  }
-  return defaultEngine;
-}
 
 // ============================================================================
 // Tool Handlers
@@ -592,9 +519,19 @@ function getDefaultEngine(): ContextEngine {
 async function handleGetCurrent(args: unknown): Promise<unknown> {
   const params = GetCurrentContextSchema.parse(args);
   const engine = getEngine(params.projectPath);
-  
+
   const contextWindow = await engine.getContextWindow();
-  
+
+  // If language/filePath filter specified, re-rank patterns
+  if (params.language || params.filePath) {
+    const patterns = await engine.patternExtractor.extractPatterns(params.projectPath);
+    const ranked = engine.patternExtractor.rankPatterns(patterns, {
+      language: params.language,
+      filePath: params.filePath,
+    });
+    contextWindow.patterns = ranked.slice(0, contextWindow.patterns.length || 5);
+  }
+
   return { context: contextWindow };
 }
 
@@ -626,6 +563,7 @@ async function handleRecall(args: unknown): Promise<unknown> {
   
   const results = await engine.recall(params.query, {
     limit: params.limit,
+    mode: params.mode as import('./types.js').RecallMode,
     layers,
     filter: {
       types: params.filter?.types,
@@ -669,28 +607,6 @@ async function handleSummarize(args: unknown): Promise<unknown> {
   };
 }
 
-async function handleGetPatterns(args: unknown): Promise<unknown> {
-  const params = GetPatternsSchema.parse(args);
-  const engine = getEngine(params.projectPath);
-  
-  const patterns = await engine.patternExtractor.extractPatterns(params.projectPath);
-  const ranked = engine.patternExtractor.rankPatterns(patterns, {
-    language: params.language,
-    filePath: params.filePath,
-  });
-  
-  return {
-    patterns: ranked.slice(0, params.limit).map(p => ({
-      id: p.id,
-      name: p.name,
-      description: p.description,
-      code: p.code,
-      language: p.language,
-      usageCount: p.usageCount,
-      lastUsedAt: p.lastUsedAt,
-    })),
-  };
-}
 
 async function handleReportEvent(args: unknown): Promise<unknown> {
   const params = ReportEventSchema.parse(args);
@@ -715,56 +631,7 @@ async function handleReportEvent(args: unknown): Promise<unknown> {
   };
 }
 
-async function handleGhost(args: unknown): Promise<unknown> {
-  const params = GhostSchema.parse(args);
-  const engine = getEngine(params.projectPath);
-  
-  const result = await engine.ghost();
-  
-  return {
-    messages: result.messages.map(m => ({
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      timestamp: m.timestamp,
-      trigger: m.trigger,
-    })),
-    relevantMemories: result.relevantMemories.map(m => ({
-      id: m.id,
-      type: m.type,
-      content: m.content.substring(0, 200),
-    })),
-    suggestedActions: result.suggestedActions,
-  };
-}
 
-async function handleTime(args: unknown): Promise<unknown> {
-  const params = TimeSchema.parse(args);
-  const ts = new TimeService();
-
-  // Validate timezone if provided
-  if (params.timezone && !TimeService.isValidTimezone(params.timezone)) {
-    throw new Error(`Unknown timezone: "${params.timezone}". Use an IANA name like 'America/New_York'.`);
-  }
-
-  if (params.expression) {
-    // Resolve a date expression to an epoch ms, then build anchor
-    const epochMs = ts.resolve(params.expression, params.timezone);
-    const anchor = ts.atTime(epochMs, params.timezone);
-    const result: Record<string, unknown> = { resolved: epochMs, anchor };
-    if (params.also?.length) {
-      result.conversions = params.also.map(tz => ts.convert(epochMs, tz));
-    }
-    return result;
-  }
-
-  const anchor = ts.now(params.timezone);
-  const result: Record<string, unknown> = { anchor };
-  if (params.also?.length) {
-    result.conversions = params.also.map(tz => ts.convert(anchor.epochMs, tz));
-  }
-  return result;
-}
 
 async function handleOrient(args: unknown): Promise<unknown> {
   const params = OrientSchema.parse(args);
@@ -776,7 +643,7 @@ async function handleOrient(args: unknown): Promise<unknown> {
   const engine = getEngine(params.projectPath);
   const orientation = await engine.orient(params.timezone);
 
-  return {
+  const result: Record<string, unknown> = {
     summary: orientation.summary,
     time: orientation.time,
     projectPath: orientation.projectPath,
@@ -789,6 +656,24 @@ async function handleOrient(args: unknown): Promise<unknown> {
       tags: m.tags,
     })),
   };
+
+  // Time tool functionality: resolve date expression
+  if (params.expression) {
+    const ts = new TimeService();
+    const epochMs = ts.resolve(params.expression, params.timezone);
+    const anchor = ts.atTime(epochMs, params.timezone);
+    result.resolved = epochMs;
+    result.resolvedAnchor = anchor;
+    if (params.also?.length) {
+      result.conversions = params.also.map(tz => ts.convert(epochMs, tz));
+    }
+  } else if (params.also?.length) {
+    // World clock without expression — convert current time
+    const ts = new TimeService();
+    result.conversions = params.also.map(tz => ts.convert(orientation.time.epochMs, tz));
+  }
+
+  return result;
 }
 
 async function handleSearchCode(args: unknown): Promise<unknown> {
@@ -865,6 +750,27 @@ async function handleUpdateMemory(args: unknown): Promise<unknown> {
   const params = UpdateMemorySchema.parse(args);
   const engine = getEngine(params.projectPath);
 
+  // Promote flow: if targetLayer is specified, promote instead of update
+  if (params.targetLayer !== undefined) {
+    // Find the memory to determine its current layer
+    const found = await engine.getMemory(params.memoryId);
+    if (!found) throw new Error(`Memory not found: ${params.memoryId}`);
+
+    const fromLayer = found.layer;
+    const targetLayer = params.targetLayer as MemoryLayer;
+
+    if (targetLayer <= fromLayer) {
+      throw new Error(`targetLayer (${targetLayer}) must be higher than current layer (${fromLayer})`);
+    }
+
+    const memory = await engine.promote(params.memoryId, fromLayer);
+    return {
+      success: true,
+      memoryId: memory.id,
+      newLayer: memory.layer,
+    };
+  }
+
   const updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[]; pinned?: boolean } = {};
   if (params.content !== undefined) updates.content = params.content;
   if (params.metadata !== undefined) updates.metadata = params.metadata;
@@ -908,6 +814,11 @@ async function handleListMemories(args: unknown): Promise<unknown> {
   const params = ListMemoriesSchema.parse(args);
   const engine = getEngine(params.projectPath);
 
+  // Stats mode: return counts instead of memories
+  if (params.stats) {
+    return engine.getStats();
+  }
+
   const result = await engine.listMemories({
     layer: params.layer as import('./types.js').MemoryLayer | undefined,
     type: params.type,
@@ -934,11 +845,6 @@ async function handleListMemories(args: unknown): Promise<unknown> {
   };
 }
 
-async function handleGetStats(args: unknown): Promise<unknown> {
-  const params = StatsSchema.parse(args);
-  const engine = getEngine(params.projectPath);
-  return engine.getStats();
-}
 
 async function handleSetup(args: unknown): Promise<unknown> {
   const params = SetupSchema.parse(args);
@@ -959,32 +865,6 @@ async function handleSetup(args: unknown): Promise<unknown> {
   return result;
 }
 
-async function handlePromote(args: unknown): Promise<unknown> {
-  const params = PromoteMemorySchema.parse(args);
-
-  // Try each engine — the memory may live in any project-scoped engine
-  for (const engine of engines.values()) {
-    try {
-      const memory = await engine.promote(params.memoryId, params.fromLayer as MemoryLayer);
-      return {
-        success: true,
-        memoryId: memory.id,
-        newLayer: memory.layer,
-      };
-    } catch (err) {
-      console.error('[ContextFabric] Promote failed for engine:', err);
-    }
-  }
-
-  // Fallback: default engine (creates one if none exist yet)
-  const engine = getDefaultEngine();
-  const memory = await engine.promote(params.memoryId, params.fromLayer as MemoryLayer);
-  return {
-    success: true,
-    memoryId: memory.id,
-    newLayer: memory.layer,
-  };
-}
 
 // ============================================================================
 // Server Setup
@@ -994,7 +874,7 @@ async function createServer(): Promise<Server> {
   const server = new Server(
     {
       name: "context-fabric",
-      version: "0.5.2",
+      version: "0.7.1",
     },
     {
       capabilities: {
@@ -1028,20 +908,8 @@ async function createServer(): Promise<Server> {
         case "context.summarize":
           result = await handleSummarize(args);
           break;
-        case "context.getPatterns":
-          result = await handleGetPatterns(args);
-          break;
         case "context.reportEvent":
           result = await handleReportEvent(args);
-          break;
-        case "context.ghost":
-          result = await handleGhost(args);
-          break;
-        case "context.promote":
-          result = await handlePromote(args);
-          break;
-        case "context.time":
-          result = await handleTime(args);
           break;
         case "context.orient":
           result = await handleOrient(args);
@@ -1060,9 +928,6 @@ async function createServer(): Promise<Server> {
           break;
         case "context.list":
           result = await handleListMemories(args);
-          break;
-        case "context.stats":
-          result = await handleGetStats(args);
           break;
         case "context.setup":
           result = await handleSetup(args);
