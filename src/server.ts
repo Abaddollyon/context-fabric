@@ -155,7 +155,7 @@ const GetMemorySchema = z.object({
 const UpdateMemorySchema = z.object({
   memoryId: z.string().min(1),
   content: z.string().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.preprocess(v => typeof v === 'string' ? JSON.parse(v) : v, z.record(z.unknown()).optional()),
   tags: z.array(z.string()).optional(),
   weight: z.number().int().min(1).max(5).optional()
     .describe('Update the memory weight (1–5)'),
@@ -177,7 +177,7 @@ const ListMemoriesSchema = z.object({
   tags: z.array(z.string()).optional(),
   limit: z.number().int().positive().default(20),
   offset: z.number().int().min(0).default(0),
-  stats: z.boolean().optional()
+  stats: z.preprocess(v => typeof v === 'string' ? v === 'true' : v, z.boolean().optional())
     .describe('If true, return memory store summary (counts per layer, pinned counts, L2 breakdown by type) instead of listing memories.'),
   projectPath: z.string().optional(),
 });
