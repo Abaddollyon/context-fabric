@@ -107,6 +107,7 @@ export class CodeIndex {
   private stmtGetMeta!: StatementSync;
   private stmtSetMeta!: StatementSync;
   private stmtGetAllChunks!: StatementSync;
+  private stmtSearchChunksBM25!: StatementSync;
 
   constructor(opts: CodeIndexOptions) {
     this.projectPath = opts.projectPath;
@@ -116,6 +117,7 @@ export class CodeIndex {
 
     this.initDb();
     this.initSchema();
+    this.initFTS5();
     this.prepareStatements();
   }
 
@@ -166,31 +168,39 @@ export class CodeIndex {
   // Search
   // ============================================================================
 
-  /** Full-text search across file content and symbol names. */
+  /** Full-text search across file content using FTS5 BM25 ranking. */
   searchText(query: string, opts: SearchOptions = {}): SearchResult[] {
     const limit = opts.limit ?? 10;
+    const sanitized = CodeIndex.sanitizeFTS5Query(query);
+
+    if (!sanitized) return [];
+
+    // Over-fetch to allow for post-filters (language, filePattern)
+    const fetchLimit = (opts.language || opts.filePattern) ? limit * 3 : limit;
+
+    let rows: Array<ChunkRow & { bm25_score: number }>;
+    try {
+      rows = this.stmtSearchChunksBM25.all(sanitized, fetchLimit) as unknown as Array<ChunkRow & { bm25_score: number }>;
+    } catch {
+      // FTS5 query syntax error — fall back to empty results
+      return [];
+    }
+
     const results: SearchResult[] = [];
-    const queryLower = query.toLowerCase();
-
-    // Search through chunks
-    const rows = this.stmtGetAllChunks.all() as unknown as ChunkRow[];
-
     for (const row of rows) {
       if (opts.language && detectLanguage(row.file_path) !== opts.language) continue;
       if (opts.filePattern && !matchGlob(row.file_path, opts.filePattern)) continue;
 
-      if (row.content.toLowerCase().includes(queryLower)) {
-        results.push({
-          filePath: row.file_path,
-          language: detectLanguage(row.file_path),
-          chunk: {
-            lineStart: row.line_start,
-            lineEnd: row.line_end,
-            content: opts.includeContent !== false ? row.content : undefined,
-          },
-        });
-        if (results.length >= limit) break;
-      }
+      results.push({
+        filePath: row.file_path,
+        language: detectLanguage(row.file_path),
+        chunk: {
+          lineStart: row.line_start,
+          lineEnd: row.line_end,
+          content: opts.includeContent !== false ? row.content : undefined,
+        },
+      });
+      if (results.length >= limit) break;
     }
 
     return results;
@@ -530,6 +540,51 @@ export class CodeIndex {
     `);
   }
 
+  /**
+   * Initialize FTS5 virtual table for full-text search on chunks.
+   * Uses external content mode (no data duplication — reads from chunks table via rowid).
+   * Idempotent: safe to call on existing databases.
+   */
+  private initFTS5(): void {
+    const ftsExists = this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='chunks_fts'"
+    ).get();
+
+    if (!ftsExists) {
+      this.db.exec(`
+        CREATE VIRTUAL TABLE chunks_fts USING fts5(
+          content, file_path,
+          content='chunks', content_rowid='rowid',
+          tokenize='porter unicode61'
+        )
+      `);
+
+      // Triggers to keep FTS in sync with the content table
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS chunks_fts_insert AFTER INSERT ON chunks BEGIN
+          INSERT INTO chunks_fts(rowid, content, file_path) VALUES (NEW.rowid, NEW.content, NEW.file_path);
+        END
+      `);
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS chunks_fts_delete AFTER DELETE ON chunks BEGIN
+          INSERT INTO chunks_fts(chunks_fts, rowid, content, file_path) VALUES('delete', OLD.rowid, OLD.content, OLD.file_path);
+        END
+      `);
+      this.db.exec(`
+        CREATE TRIGGER IF NOT EXISTS chunks_fts_update AFTER UPDATE ON chunks BEGIN
+          INSERT INTO chunks_fts(chunks_fts, rowid, content, file_path) VALUES('delete', OLD.rowid, OLD.content, OLD.file_path);
+          INSERT INTO chunks_fts(rowid, content, file_path) VALUES (NEW.rowid, NEW.content, NEW.file_path);
+        END
+      `);
+
+      // Backfill existing data
+      this.db.exec(`
+        INSERT INTO chunks_fts(rowid, content, file_path)
+        SELECT rowid, content, file_path FROM chunks
+      `);
+    }
+  }
+
   private prepareStatements(): void {
     this.stmtInsertFile = this.db.prepare(
       'INSERT OR REPLACE INTO indexed_files (path, mtime_ms, size_bytes, language, hash, indexed_at, chunk_count) VALUES (?, ?, ?, ?, ?, ?, ?)'
@@ -566,6 +621,15 @@ export class CodeIndex {
     );
 
     this.stmtGetAllChunks = this.db.prepare('SELECT * FROM chunks');
+
+    this.stmtSearchChunksBM25 = this.db.prepare(`
+      SELECT c.*, bm25(chunks_fts) as bm25_score
+      FROM chunks_fts fts
+      JOIN chunks c ON c.rowid = fts.rowid
+      WHERE chunks_fts MATCH ?
+      ORDER BY bm25(chunks_fts)
+      LIMIT ?
+    `);
   }
 
   // ============================================================================
@@ -626,6 +690,23 @@ export class CodeIndex {
     }
 
     return chunks;
+  }
+
+  /**
+   * Sanitize a query string for FTS5 MATCH syntax.
+   * Strips FTS5 operators and wraps each token in double quotes to force literal matching.
+   */
+  static sanitizeFTS5Query(query: string): string {
+    const cleaned = query
+      .replace(/[*"():^{}~<>]/g, ' ')
+      .replace(/\b(AND|OR|NOT|NEAR)\b/gi, '')
+      .trim();
+    if (!cleaned) return '';
+
+    const tokens = cleaned.split(/\s+/).filter(t => t.length > 0);
+    if (tokens.length === 0) return '';
+
+    return tokens.map(t => `"${t}"`).join(' ');
   }
 }
 

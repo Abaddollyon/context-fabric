@@ -70,11 +70,11 @@ const RecallSchema = z.object({
     tags: z.array(z.string()).optional(),
     projectPath: z.string().optional(),
   }).optional(),
-  sessionId: z.string(),
+  sessionId: z.string().optional(),
 });
 
 const GetCurrentContextSchema = z.object({
-  sessionId: z.string(),
+  sessionId: z.string().optional(),
   currentFile: z.string().optional(),
   currentCommand: z.string().optional(),
   projectPath: z.string().optional(),
@@ -85,7 +85,7 @@ const GetCurrentContextSchema = z.object({
 });
 
 const SummarizeSchema = z.object({
-  sessionId: z.string(),
+  sessionId: z.string().optional(),
   layer: z.number().int().min(2).max(3).default(2),
   olderThanDays: z.number().int().positive().default(30),
   options: z.object({
@@ -201,7 +201,7 @@ const TOOLS: Tool[] = [
         language: { type: "string", description: "Filter patterns by language (e.g. 'typescript', 'python')" },
         filePath: { type: "string", description: "Filter patterns by file path" },
       },
-      required: ["sessionId"],
+      required: [],
     },
   },
   {
@@ -281,7 +281,7 @@ const TOOLS: Tool[] = [
         },
         sessionId: { type: "string" },
       },
-      required: ["query", "sessionId"],
+      required: ["query"],
     },
   },
   {
@@ -305,7 +305,7 @@ const TOOLS: Tool[] = [
         },
         projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
       },
-      required: ["sessionId", "options"],
+      required: ["options"],
     },
   },
   {
