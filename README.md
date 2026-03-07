@@ -4,7 +4,7 @@
 
 **Persistent memory for AI coding agents.** Your agent remembers everything -- across sessions, projects, and tools.
 
-[![Version](https://img.shields.io/badge/version-0.7.1-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
+[![Version](https://img.shields.io/badge/version-0.7.2-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Node](https://img.shields.io/badge/node-22.5%2B-brightgreen?style=flat-square)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](Dockerfile)
