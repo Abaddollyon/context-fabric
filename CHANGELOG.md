@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-03-07
+
+### Fixed
+- **`sessionId` no longer required** on `context.recall`, `context.getCurrent`, and `context.summarize` — the field was required by the schema but never used by the handlers, causing Zod validation errors when callers omitted it. Now optional (still accepted if provided). `context.reportEvent` retains `sessionId` as required since it passes it through to `CLIEvent`.
+
+### Added
+- **FTS5 full-text search for code index** — `context.searchCode` text mode now uses an FTS5 virtual table (`chunks_fts`) with BM25 ranking instead of loading all chunks into memory and doing substring matching. Follows the same pattern as L2/L3 memory search (external content mode, porter+unicode61 tokenizer, trigger-synced). The migration is idempotent and auto-backfills existing data on first run.
+
 ## [0.7.2] - 2026-03-07
 
 ### Fixed
