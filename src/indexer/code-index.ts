@@ -6,10 +6,12 @@
  */
 
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
-import { readFileSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, statSync, mkdirSync, existsSync } from 'fs';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import type { EmbeddingService } from '../embedding.js';
 import type { FabricConfig } from '../types.js';
+import { sanitizeFTS5Query } from '../fts5.js';
 import { discoverFiles, computeDiff, detectLanguage, isIndexableExtension, type ExistingFileInfo } from './scanner.js';
 import { extractSymbols, type ExtractedSymbol } from './symbols.js';
 import { FileWatcher } from './watcher.js';
@@ -93,6 +95,7 @@ export class CodeIndex {
   // Prepared statements (initialized after schema)
   private stmtInsertFile!: StatementSync;
   private stmtDeleteFile!: StatementSync;
+  private stmtDeleteChunksByFile!: StatementSync;
   private stmtUpdateMtime!: StatementSync;
   private stmtGetFile!: StatementSync;
   private stmtGetAllFiles!: StatementSync;
@@ -143,8 +146,8 @@ export class CodeIndex {
           }
         },
         onDeleted: (relPath) => {
-          try { this.stmtDeleteFile.run(relPath); } catch (err) {
-            console.warn('[ContextFabric] stmtDeleteFile failed for deleted file:', relPath, err);
+          try { this.deleteFileFromIndex(relPath); } catch (err) {
+            console.warn('[ContextFabric] deleteFileFromIndex failed for deleted file:', relPath, err);
           }
         },
       });
@@ -300,7 +303,7 @@ export class CodeIndex {
 
     if (!existsSync(fullPath)) {
       // File deleted
-      this.stmtDeleteFile.run(relativePath);
+      this.deleteFileFromIndex(relativePath);
       return;
     }
 
@@ -313,13 +316,11 @@ export class CodeIndex {
     }
 
     const language = detectLanguage(relativePath);
-    const { statSync } = await import('fs');
     const stat = statSync(fullPath);
-    const { createHash } = await import('crypto');
     const hash = createHash('sha256').update(content).digest('hex');
 
-    // Delete existing data for this file (cascades to symbols + chunks)
-    this.stmtDeleteFile.run(relativePath);
+    // Delete existing data for this file (chunks explicitly to fire FTS5 triggers; rest cascades)
+    this.deleteFileFromIndex(relativePath);
 
     // Extract symbols
     const symbols = extractSymbols(content, language);
@@ -408,9 +409,9 @@ export class CodeIndex {
         this.config.maxFileSizeBytes,
       );
 
-      // Delete removed files
+      // Delete removed files (explicit chunk delete to fire FTS5 triggers)
       for (const delPath of deleted) {
-        this.stmtDeleteFile.run(delPath);
+        this.deleteFileFromIndex(delPath);
       }
 
       // Update touched files (mtime only)
@@ -590,6 +591,9 @@ export class CodeIndex {
       'INSERT OR REPLACE INTO indexed_files (path, mtime_ms, size_bytes, language, hash, indexed_at, chunk_count) VALUES (?, ?, ?, ?, ?, ?, ?)'
     );
     this.stmtDeleteFile = this.db.prepare('DELETE FROM indexed_files WHERE path = ?');
+    // Delete chunks explicitly before the parent row so the FTS5 AFTER DELETE trigger fires.
+    // CASCADE deletes bypass SQLite triggers, which would leave stale entries in chunks_fts.
+    this.stmtDeleteChunksByFile = this.db.prepare('DELETE FROM chunks WHERE file_path = ?');
     this.stmtUpdateMtime = this.db.prepare('UPDATE indexed_files SET mtime_ms = ? WHERE path = ?');
     this.stmtGetFile = this.db.prepare('SELECT * FROM indexed_files WHERE path = ?');
     this.stmtGetAllFiles = this.db.prepare('SELECT * FROM indexed_files');
@@ -693,20 +697,17 @@ export class CodeIndex {
   }
 
   /**
-   * Sanitize a query string for FTS5 MATCH syntax.
-   * Strips FTS5 operators and wraps each token in double quotes to force literal matching.
+   * Delete a file and its chunks/symbols from the index.
+   * Explicitly deletes chunks first so the FTS5 AFTER DELETE trigger fires
+   * (CASCADE deletes bypass SQLite triggers, leaving stale FTS entries).
    */
+  private deleteFileFromIndex(relativePath: string): void {
+    this.stmtDeleteChunksByFile.run(relativePath);
+    this.stmtDeleteFile.run(relativePath);
+  }
+
   static sanitizeFTS5Query(query: string): string {
-    const cleaned = query
-      .replace(/[*"():^{}~<>]/g, ' ')
-      .replace(/\b(AND|OR|NOT|NEAR)\b/gi, '')
-      .trim();
-    if (!cleaned) return '';
-
-    const tokens = cleaned.split(/\s+/).filter(t => t.length > 0);
-    if (tokens.length === 0) return '';
-
-    return tokens.map(t => `"${t}"`).join(' ');
+    return sanitizeFTS5Query(query);
   }
 }
 

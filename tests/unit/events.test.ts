@@ -4,6 +4,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { existsSync } from 'fs';
+import { resolve } from 'path';
 import { EventHandler, EventResult } from '../../src/events.js';
 import { ContextEngine } from '../../src/engine.js';
 import { CLIEvent, MemoryLayer, MemoryType } from '../../src/types.js';
@@ -14,6 +16,11 @@ import {
   assertValidMemory,
   sleep,
 } from '../utils.js';
+
+/** Skip L3-dependent tests when the ONNX embedding model isn't available (e.g. CI) */
+const hasEmbeddingModel = existsSync(
+  resolve('local_cache', 'fast-bge-small-en', 'tokenizer.json')
+);
 
 describe('EventHandler', () => {
   let context: Awaited<ReturnType<typeof createTestContext>>;
@@ -322,7 +329,7 @@ describe('EventHandler', () => {
   // Event Type: pattern_detected
   // ============================================================================
   
-  describe('pattern_detected event', () => {
+  describe.skipIf(!hasEmbeddingModel)('pattern_detected event', () => {
     it('should create L3 code_pattern memory', async () => {
       const event = createMockEvent('pattern_detected', {
         pattern: 'Error handling with try-catch',
@@ -359,7 +366,7 @@ describe('EventHandler', () => {
   // Event Type: user_feedback
   // ============================================================================
   
-  describe('user_feedback event', () => {
+  describe.skipIf(!hasEmbeddingModel)('user_feedback event', () => {
     it('should create L3 relationship memory with rating', async () => {
       const event = createMockEvent('user_feedback', {
         feedback: 'Prefer shorter variable names',
@@ -454,7 +461,7 @@ describe('EventHandler', () => {
       expect(decisionMemory?.metadata?.source).toBe('ai_inferred');
     });
     
-    it('should set source based on event type - user explicit events', async () => {
+    it.skipIf(!hasEmbeddingModel)('should set source based on event type - user explicit events', async () => {
       const feedbackEvent = createMockEvent('user_feedback', { feedback: 'test' });
       const feedbackResult = await handler.handleEvent(feedbackEvent);
       await sleep(200);

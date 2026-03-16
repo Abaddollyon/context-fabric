@@ -88,12 +88,13 @@ const SummarizeSchema = z.object({
   sessionId: z.string().optional(),
   layer: z.number().int().min(2).max(3).default(2),
   olderThanDays: z.number().int().positive().default(30),
+  // options is accepted but not yet wired into the engine — reserved for future use
   options: z.object({
-    targetTokens: z.number().int().positive(),
+    targetTokens: z.number().int().positive().optional(),
     focusTypes: z.array(z.enum(["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"])).optional(),
     includePatterns: z.boolean().default(true),
     includeDecisions: z.boolean().default(true),
-  }),
+  }).optional(),
   projectPath: z.string().optional(),
 });
 
@@ -162,9 +163,17 @@ const UpdateMemorySchema = z.object({
   pinned: z.boolean().optional()
     .describe('Pin (true) or unpin (false) this memory. Pinned memories are exempt from decay and summarization.'),
   targetLayer: z.number().int().min(2).max(3).optional()
-    .describe('Promote memory to this layer (2=project, 3=semantic). Triggers promote logic: copies to new layer and deletes from old.'),
+    .describe('Promote memory to this layer (2=project, 3=semantic). Triggers promote logic: copies to new layer and deletes from old. Cannot be combined with content/metadata/tags/weight/pinned.'),
   projectPath: z.string().optional(),
-});
+}).refine(
+  (data) => {
+    if (data.targetLayer === undefined) return true;
+    return data.content === undefined && data.metadata === undefined
+      && data.tags === undefined && data.weight === undefined
+      && data.pinned === undefined;
+  },
+  { message: 'targetLayer (promote) cannot be combined with content/metadata/tags/weight/pinned updates. Use separate calls.' }
+);
 
 const DeleteMemorySchema = z.object({
   memoryId: z.string().min(1),
@@ -295,17 +304,16 @@ const TOOLS: Tool[] = [
         olderThanDays: { type: "number", default: 30, description: "Summarize memories older than this many days" },
         options: {
           type: "object",
+          description: "Optional summarization hints (reserved for future use).",
           properties: {
             targetTokens: { type: "number" },
             focusTypes: { type: "array", items: { type: "string" } },
             includePatterns: { type: "boolean" },
             includeDecisions: { type: "boolean" },
           },
-          required: ["targetTokens"],
         },
         projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
       },
-      required: ["options"],
     },
   },
   {
@@ -484,31 +492,49 @@ const TOOLS: Tool[] = [
 // Engine Management
 // ============================================================================
 
-// Map of projectPath -> ContextEngine instances
+// Map of projectPath -> ContextEngine instances (bounded to prevent memory leaks)
+const MAX_ENGINES = 32;
 const engines = new Map<string, ContextEngine>();
 let defaultEngine: ContextEngine | null = null;
 
 /**
- * Get or create a ContextEngine for a project
+ * Get or create a ContextEngine for a project.
+ * Evicts the least-recently-used engine when the cache exceeds MAX_ENGINES.
  */
 function getEngine(projectPath?: string): ContextEngine {
   const path = projectPath || process.cwd();
-  
-  if (!engines.has(path)) {
-    const engine = new ContextEngine({
-      projectPath: path,
-      autoCleanup: true,
-      logLevel: 'info',
-    });
+
+  // Move to end on access (LRU ordering — Map preserves insertion order)
+  if (engines.has(path)) {
+    const engine = engines.get(path)!;
+    engines.delete(path);
     engines.set(path, engine);
-    
-    // Set as default if first engine
-    if (!defaultEngine) {
-      defaultEngine = engine;
+    return engine;
+  }
+
+  // Evict oldest engine if at capacity
+  if (engines.size >= MAX_ENGINES) {
+    const [oldestPath, oldestEngine] = engines.entries().next().value!;
+    oldestEngine.close();
+    engines.delete(oldestPath);
+    if (defaultEngine === oldestEngine) {
+      defaultEngine = null;
     }
   }
-  
-  return engines.get(path)!;
+
+  const engine = new ContextEngine({
+    projectPath: path,
+    autoCleanup: true,
+    logLevel: 'info',
+  });
+  engines.set(path, engine);
+
+  // Set as default if first engine
+  if (!defaultEngine) {
+    defaultEngine = engine;
+  }
+
+  return engine;
 }
 
 
@@ -874,7 +900,7 @@ async function createServer(): Promise<Server> {
   const server = new Server(
     {
       name: "context-fabric",
-      version: "0.7.1",
+      version: "0.7.3.1",
     },
     {
       capabilities: {
