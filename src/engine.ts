@@ -106,6 +106,7 @@ export class ContextEngine {
   eventHandler: EventHandler;
   private logLevel: 'debug' | 'info' | 'warn' | 'error';
   private cleanupIntervalId: ReturnType<typeof setInterval> | null = null;
+  private closed = false;
   private codeIndex: CodeIndex | null = null;
 
   constructor(options: EngineOptions) {
@@ -936,6 +937,7 @@ export class ContextEngine {
    */
   close(): void {
     this.log('info', 'Closing ContextEngine...');
+    this.closed = true;
 
     // Stop intervals
     if (this.cleanupIntervalId) {
@@ -1109,15 +1111,22 @@ export class ContextEngine {
   private startDecayInterval(): void {
     // Apply decay every hour
     this.cleanupIntervalId = setInterval(async () => {
+      if (this.closed) return;
       try {
         const affected = await this.l3.applyDecay();
         if (affected > 0) {
           this.log('debug', `Applied decay to ${affected} L3 memories`);
         }
       } catch (error) {
-        this.log('error', 'Decay application failed:', error);
+        if (!this.closed) {
+          this.log('error', 'Decay application failed:', error);
+        }
       }
     }, 3600000);
+    // Don't keep the process alive just for decay
+    if (this.cleanupIntervalId && typeof this.cleanupIntervalId === 'object' && 'unref' in this.cleanupIntervalId) {
+      this.cleanupIntervalId.unref();
+    }
   }
 
   /**

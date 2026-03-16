@@ -58,4 +58,4 @@ export {
 } from './config.js';
 
 // Version
-export const VERSION = '0.4.0';
+export const VERSION = '0.7.3.1';

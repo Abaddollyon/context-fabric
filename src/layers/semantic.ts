@@ -10,6 +10,7 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { Memory, MemoryType, MemoryMetadata, RelationshipEdge } from '../types.js';
 import { EmbeddingService } from '../embedding.js';
+import { sanitizeFTS5Query } from '../fts5.js';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -510,21 +511,8 @@ export class SemanticMemoryLayer {
     }
   }
 
-  /**
-   * Sanitize a query string for FTS5 MATCH syntax.
-   * Strips FTS5 operators and wraps each token in double quotes.
-   */
   static sanitizeFTS5Query(query: string): string {
-    const cleaned = query
-      .replace(/[*"():^{}~<>]/g, ' ')
-      .replace(/\b(AND|OR|NOT|NEAR)\b/gi, '')
-      .trim();
-    if (!cleaned) return '';
-
-    const tokens = cleaned.split(/\s+/).filter(t => t.length > 0);
-    if (tokens.length === 0) return '';
-
-    return tokens.map(t => `"${t}"`).join(' ');
+    return sanitizeFTS5Query(query);
   }
 
   /** Expose the shared EmbeddingService so the code index can reuse it. */

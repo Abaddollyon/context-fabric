@@ -171,6 +171,10 @@ export class WorkingMemoryLayer {
     this.cleanupIntervalId = setInterval(() => {
       this.cleanup();
     }, intervalMs);
+    // Don't keep the process alive just for cleanup
+    if (this.cleanupIntervalId && typeof this.cleanupIntervalId === 'object' && 'unref' in this.cleanupIntervalId) {
+      this.cleanupIntervalId.unref();
+    }
   }
 
   /**

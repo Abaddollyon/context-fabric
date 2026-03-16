@@ -6,6 +6,7 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { v4 as uuidv4 } from 'uuid';
 import { MemoryLayer, type Memory, type MemoryType, type MemoryMetadata, type SummaryResult } from '../types.js';
+import { sanitizeFTS5Query } from '../fts5.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -528,23 +529,8 @@ export class ProjectMemoryLayer {
     }
   }
 
-  /**
-   * Sanitize a query string for FTS5 MATCH syntax.
-   * Strips FTS5 operators and wraps each token in double quotes to force literal matching.
-   */
   static sanitizeFTS5Query(query: string): string {
-    // Remove FTS5 special operators and punctuation that could cause parse errors
-    const cleaned = query
-      .replace(/[*"():^{}~<>]/g, ' ')  // strip FTS5 operators
-      .replace(/\b(AND|OR|NOT|NEAR)\b/gi, '')  // strip boolean keywords
-      .trim();
-    if (!cleaned) return '';
-
-    // Split into tokens and wrap each in quotes to force literal matching
-    const tokens = cleaned.split(/\s+/).filter(t => t.length > 0);
-    if (tokens.length === 0) return '';
-
-    return tokens.map(t => `"${t}"`).join(' ');
+    return sanitizeFTS5Query(query);
   }
 
   close(): void {
