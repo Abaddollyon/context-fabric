@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-21
+
+### Theme: Scalable Recall & Robustness
+
+This release makes the storage layers production-grade: the critical L3
+recall scalability problem is fixed, databases survive unclean exit, and
+the server can take online snapshots without stopping.
+
+### Added
+- **L3 FTS5 pre-filter (`recallPrefiltered`)** — the critical scalability
+  fix. `recall()` previously loaded every semantic row, JSON-parsed every
+  embedding, and ran cosine over the full set (O(N), unusable past ~10K
+  memories). `recallPrefiltered(query, limit, poolSize=200)` uses the
+  existing FTS5 index to fetch just the top-poolSize keyword matches,
+  then runs cosine over that pool. Hybrid mode (the default recall path)
+  now uses it. Pure `semantic` mode still uses full-scan for exact
+  recall. **Benchmark: p50 latency at 10K drops from 281 ms to 8 ms (35×).**
+- **`context.backup` MCP tool** — online VACUUM INTO snapshots of L2 and
+  L3 to a destination directory. Tool count: **12 → 13**. WAL-checkpointed,
+  refuses to clobber existing files, safe to copy offsite.
+- **WAL checkpoint on close** — all three SQLite-backed layers
+  (`src/layers/project.ts`, `src/layers/semantic.ts`,
+  `src/indexer/code-index.ts`) now run `PRAGMA wal_checkpoint(TRUNCATE)`
+  before `db.close()`, flushing the WAL and zeroing the sidecar.
+- **Startup integrity check** — new `src/db-integrity.ts` runs
+  `PRAGMA quick_check` when L2/L3 open a file-backed database and emits a
+  labelled `console.warn` on corruption. Non-fatal so the user can still
+  export surviving data.
+- **Graceful shutdown** — new `src/shutdown.ts` adds a `ShutdownController`
+  that brackets every MCP `CallToolRequest` handler. SIGTERM/SIGINT now
+  waits up to 5 s for in-flight tool calls to finish before closing
+  engines; new tool calls are rejected during drain.
+- **Transaction wrapping** — L2 `store()` (memory row + tag rows) and
+  `summarize()` (summary row + delete originals) are now wrapped in
+  explicit `BEGIN`/`COMMIT`/`ROLLBACK` blocks. Previously each statement
+  committed independently, so a mid-operation failure could leave the
+  layer in a partial state.
+- **Recall benchmark suite** — `benchmarks/recall-latency.ts` seeds 1 K
+  and 10 K synthetic memories and measures p50/p95 for `recall()` vs
+  `recallPrefiltered()`. Runs via `npm run bench:recall` against `dist/`.
+  Skips cleanly when the bge-small-en model is not cached.
+
+### Tests
+- **612 passing** (up from 588), 24 test files. New suites:
+  `tests/unit/shutdown-safety.test.ts`, `tests/unit/db-integrity.test.ts`,
+  `tests/unit/shutdown.test.ts`, `tests/unit/l3-prefilter.test.ts`,
+  `tests/unit/backup.test.ts`, `tests/unit/transactions.test.ts`.
+
+### Migration
+- No breaking changes. All new MCP tools and APIs are additive.
+- The new `context.backup` tool requires clients to be aware of the
+  updated tool list (now 13 tools).
+
 ## [0.7.3] - 2026-03-07
 
 ### Fixed

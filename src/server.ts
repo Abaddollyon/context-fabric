@@ -933,7 +933,7 @@ async function createServer(): Promise<Server> {
   const server = new Server(
     {
       name: "context-fabric",
-      version: "0.7.3.1",
+      version: "0.8.0",
     },
     {
       capabilities: {

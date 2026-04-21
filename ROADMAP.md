@@ -1,6 +1,6 @@
 # Context Fabric — Roadmap to 1.0
 
-> Current version: **0.7.3** | Target: **1.0.0**
+> Current version: **0.8.0** | Target: **1.0.0**
 
 ## Philosophy
 
@@ -20,19 +20,19 @@
 ### L3 Vector Search Scalability (Critical)
 The current `recall()` loads **all rows** from SQLite and computes cosine similarity in O(N). This breaks around 10K memories (15MB in-memory, plus JSON.parse overhead per embedding).
 
-- [ ] **Pre-filter with FTS5** — use keyword search to narrow candidates before vector comparison (hybrid pre-filter, not post-fusion)
-- [ ] **Chunked loading** — load embeddings in batches of 1K instead of all-at-once
+- [x] **Pre-filter with FTS5** — use keyword search to narrow candidates before vector comparison (hybrid pre-filter, not post-fusion) _(v0.8.0)_
+- [ ] **Chunked loading** — load embeddings in batches of 1K instead of all-at-once _(superseded by pre-filter — full-scan now bounded to FTS5 pool)_
 - [ ] **Optional sqlite-vss / sqlite-vec** — detect if the native vector extension is available and use it for ANN search; fall back to brute-force if not
-- [ ] **Benchmark suite** — automated performance tests at 1K, 10K, 50K, 100K memories with latency assertions
+- [x] **Benchmark suite** — automated performance tests at 1K, 10K, 50K, 100K memories with latency assertions _(v0.8.0 — 1K+10K; `npm run bench:recall`)_
 
 ### Data Integrity
-- [ ] **WAL checkpoint on shutdown** — call `PRAGMA wal_checkpoint(TRUNCATE)` in `close()` to flush pending WAL frames, preventing data loss on unclean exit
-- [ ] **Backup tool** — `context.backup` MCP tool that creates a timestamped SQLite `.backup()` copy (or `VACUUM INTO` for a consistent snapshot)
-- [ ] **Corruption detection** — run `PRAGMA integrity_check` on startup (first 100 pages) and warn if issues found
-- [ ] **Transaction wrapping** — wrap multi-statement operations (promote, summarize) in explicit transactions for atomicity
+- [x] **WAL checkpoint on shutdown** — call `PRAGMA wal_checkpoint(TRUNCATE)` in `close()` to flush pending WAL frames, preventing data loss on unclean exit _(v0.8.0)_
+- [x] **Backup tool** — `context.backup` MCP tool that creates a timestamped SQLite `.backup()` copy (or `VACUUM INTO` for a consistent snapshot) _(v0.8.0 — VACUUM INTO)_
+- [x] **Corruption detection** — run `PRAGMA integrity_check` on startup (first 100 pages) and warn if issues found _(v0.8.0 — `quick_check`)_
+- [x] **Transaction wrapping** — wrap multi-statement operations (promote, summarize) in explicit transactions for atomicity _(v0.8.0 — L2 store + summarize)_
 
 ### Shutdown Safety
-- [ ] **Graceful shutdown** — SIGTERM/SIGINT handlers wait up to 5s for in-flight MCP tool calls to finish before closing engines
+- [x] **Graceful shutdown** — SIGTERM/SIGINT handlers wait up to 5s for in-flight MCP tool calls to finish before closing engines _(v0.8.0)_
 - [ ] **In-flight decay guard** — already added (`closed` flag); extend to all async engine methods
 
 ---
