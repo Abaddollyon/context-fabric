@@ -252,15 +252,46 @@ export class CodeIndex {
     return results;
   }
 
-  /** Semantic search using embeddings. */
+  /**
+   * Semantic search using embeddings.
+   *
+   * v0.11.2: uses the FTS5 BM25 index as a candidate prefilter. Previously
+   * this method loaded every chunk row and JSON.parsed every embedding
+   * before cosine — O(N) and unusable past a few thousand chunks. Now we
+   * take the top `poolSize` BM25 hits for the query and cosine only those.
+   *
+   * Falls back to full-scan when:
+   *   - the sanitized query is empty (no tokens)
+   *   - FTS5 returns zero candidates (brand-new vocabulary or syntax error)
+   *
+   * Post-filters (language, filePattern) are still applied to the cosine
+   * pool so callers get the same result shape.
+   */
   async searchSemantic(query: string, opts: SearchOptions = {}): Promise<SearchResult[]> {
     if (!this.embeddingService) return [];
 
     const limit = opts.limit ?? 10;
     const threshold = opts.threshold ?? 0.5;
+    const poolSize = Math.max(limit * 10, 200);
 
     const queryEmbedding = await this.embeddingService.embed(query);
-    const rows = this.stmtGetAllChunks.all() as unknown as ChunkRow[];
+
+    // Try BM25 prefilter pool first.
+    let rows: ChunkRow[] = [];
+    const sanitized = CodeIndex.sanitizeFTS5Query(query);
+    if (sanitized) {
+      try {
+        rows = this.stmtSearchChunksBM25.all(sanitized, poolSize) as unknown as ChunkRow[];
+      } catch {
+        /* FTS5 syntax error — fall through */
+      }
+    }
+
+    // Fallback to full scan when the pool is empty (no keyword overlap).
+    if (rows.length === 0) {
+      rows = this.stmtGetAllChunks.all() as unknown as ChunkRow[];
+    }
+
     const scored: Array<{ row: ChunkRow; similarity: number }> = [];
 
     for (const row of rows) {
@@ -274,6 +305,11 @@ export class CodeIndex {
         console.warn('[ContextFabric] Corrupted embedding in code index, skipping chunk:', row.file_path, err);
         continue;
       }
+
+      // Skip chunks that failed to embed at index time (stored as [] when
+      // the embedding service threw). Their cosine is 0 and pollutes the
+      // sort.
+      if (embedding.length === 0) continue;
 
       const similarity = cosineSimilarity(queryEmbedding, embedding);
       if (similarity >= threshold) {
