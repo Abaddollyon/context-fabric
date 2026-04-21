@@ -9,7 +9,7 @@ Context Fabric exposes its tools via MCP, but your AI agent needs instructions t
 
 ## How It Works
 
-When Context Fabric is connected to a CLI tool, the AI sees 12 MCP tools in its available tool list (e.g. `context.orient`, `context.store`, `context.searchCode`). Each tool has a description that hints at when to use it, but AI agents work best when given explicit guidance in their system prompt or project-level config.
+When Context Fabric is connected to a CLI tool, the AI sees 25 MCP tools in its available tool list (e.g. `context.orient`, `context.store`, `context.searchCode`, six `context.skill.*` tools). Each tool has a description that hints at when to use it, but AI agents work best when given explicit guidance in their system prompt or project-level config.
 
 The integration model:
 
@@ -120,7 +120,7 @@ When should the agent call each tool? Here's the full mapping:
 
 ## Example: Claude Code
 
-The project ships a `CLAUDE.md` at the repo root with full integration instructions. When Claude Code opens the project, it reads this file automatically and uses all 12 tools without any manual prompting.
+The project ships a `CLAUDE.md` at the repo root with full integration instructions. When Claude Code opens the project, it reads this file automatically and uses all 25 tools without any manual prompting.
 
 If you want to replicate this in your own project, create a `CLAUDE.md`:
 
@@ -166,6 +166,41 @@ and bug fixes with context.store so they persist across sessions.
 - **Don't over-prompt.** The agent will call `context.recall` on its own if it knows about decisions. You don't need to tell it to recall before every single action.
 - **Code index builds lazily.** The first `context.searchCode` call triggers a full project scan. After that, it stays updated via file watching and `orient()` calls.
 - **Memories persist across CLIs.** A decision stored in Claude Code is recalled in Cursor, Kimi, or any other connected CLI.
+
+---
+
+## Using the cf-* slash-command prompts (v0.12+)
+
+In addition to the 25 tools, Context Fabric exposes **five MCP Prompts** — templated slash-commands that clients (Claude Desktop, Claude Code, Continue) surface as `/cf-*` entries in their prompt palette. These are the canonical entry points for recurring Context Fabric workflows.
+
+| Prompt | Args | What it does |
+|--------|------|--------------|
+| `/cf-orient` | — | Calls `context.orient`, summarizes the offline gap, lists open threads and recent decisions. **Prefer this over telling the agent to "run orient" manually.** |
+| `/cf-capture-decision` | `topic` (required) | Walks the agent through decision capture (what / options / pick / trade-offs / reversibility), then calls `context.store` with `type="decision"` |
+| `/cf-review-session` | — | Reviews what was attempted, what succeeded, what is still open; proposes up to 5 memories to persist |
+| `/cf-search-code` | `query` (required) | Picks the right `context.searchCode` mode (text / symbol / semantic) for the query and returns top 5 hits with file:line |
+| `/cf-invoke-skill` | `slug` (required) | Calls `context.skill.invoke` and prompts for any missing parameters |
+
+> [!TIP]
+> At session start, **use `/cf-orient` instead of manually telling the agent to call `context.orient`**. The prompt template already captures the right follow-up behavior (summarize gap, list threads, list decisions) so you don't have to reinvent it every session.
+
+### Fallback for clients without prompt support
+
+As of April 2026, Cursor and Codex CLI do **not** implement the MCP Prompts primitive — they can call Tools but not Prompts. For those clients, fall back to the equivalent tool-call pattern in the [Recommended Instructions](#recommended-instructions) section above. The [Client compatibility matrix](mcp-primitives.md#client-compatibility-matrix-april-2026) in the MCP Primitives doc has the full breakdown.
+
+---
+
+## Reading MCP Resources (v0.12+)
+
+Clients that support the MCP Resources primitive can read stable reference material directly as URIs without paying for a tool round-trip:
+
+- `memory://conventions` — everything tagged `convention`. Good for loading project house-rules at session start.
+- `memory://decisions` — every stored `decision` memory. Good for refreshing architectural context.
+- `memory://skills` — all registered skills with metadata.
+- `memory://recent` — 20 most recent L2 memories.
+
+> [!TIP]
+> Where your agent framework supports it, **subscribe to `memory://conventions` and `memory://decisions` at session start**. The agent then has the project's stable knowledge loaded without calling `context.recall` or `context.list` at all. See [MCP Primitives > Resources](mcp-primitives.md#resources) for full URI and response shapes.
 
 ---
 

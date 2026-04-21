@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-04-21
+
+### Theme: Docs refresh — bring external-facing artifacts in line with reality
+
+No behavior or API changes. Pure documentation and registry-metadata update.
+The code had drifted ahead of the docs across v0.11 and v0.12; this release
+realigns them and fixes several ground-truth errors that had accumulated in
+the `docs/` tree since v0.7.
+
+### Changed
+- **`smithery.yaml`** — version bumped from `0.7.1` → `0.12.1`. Now lists all
+  25 MCP tools (was 12), all 6 `memory://` Resources, all 5 `cf-*` Prompts,
+  correct env vars (`CONTEXT_FABRIC_HOME` / `CONTEXT_FABRIC_LOG_LEVEL` /
+  `CONTEXT_FABRIC_DEFAULT_PROJECT` / `CF_DISABLE_SQLITE_VEC`), and accurate
+  embedding model (`bge-small-en`, 384-d). Old registry entry was still
+  advertising the v0.7.1 feature set.
+- **`README.md`** — tool count corrected to 25 (was 24), skill-tool list
+  corrected to 6 (create/list/get/invoke/update/delete — was 5 with a
+  phantom `remove`), test count updated to 719/40 (was 697/37),
+  `context.importDocs` default file list corrected (removed phantom
+  `ARCHITECTURE.md`, added `ROADMAP.md`). New docs links for `skills.md`
+  and `mcp-primitives.md`.
+- **`docs/tools-reference.md`** — opening sentence fixed to "All 25 MCP tools".
+  Added full sections (parameter table + example request + example response)
+  for the 13 tools that had been undocumented since they shipped:
+  `storeBatch`, `backup`, `export`, `import`, `metrics`, `health`,
+  `importDocs`, and all 6 `skill.*` tools. Updated `context.store` and
+  `context.recall` sections with v0.11 fields (provenance, supersedes,
+  dedupe, asOf, includeSuperseded, offset). Replaced the outdated
+  "Migration from v0.6 → v0.7.1" block with a pointer to this file.
+- **`docs/memory-types.md`** — table now shows seven primary types
+  (added `skill`). New "Legacy Type Aliases" subsection documenting the
+  pre-v0.7 aliases retained for back-compat (code, message, thought,
+  observation, documentation, error, summary). New dedicated sections on
+  Provenance, Dedup-on-store, and Bi-temporal reasoning, each with a
+  store/recall example. Embedding model line corrected to `bge-small-en`
+  (was the incorrect `Xenova/all-MiniLM-L6-v2`). Added opt-in
+  sqlite-vec note.
+- **`docs/configuration.md`** — env var table fixed: `CONTEXT_FABRIC_DIR`
+  renamed to `CONTEXT_FABRIC_HOME` (the old name was never wired to any
+  code path), `LOG_LEVEL` renamed to `CONTEXT_FABRIC_LOG_LEVEL`. Removed
+  `L1_DEFAULT_TTL` and `L3_DECAY_DAYS` entries (those env vars don't
+  exist in the code — those values come from `config.yaml` only). Added
+  `CONTEXT_FABRIC_DEFAULT_PROJECT` and `CF_DISABLE_SQLITE_VEC` rows. New
+  "sqlite-vec (optional ANN acceleration)" section. Honest note on the
+  `embedding.model` yaml key being currently reserved/unused.
+- **`docs/architecture.md`** — new "What's new in v0.11 / v0.12" section
+  covering memory intelligence, agent ergonomics, and the performance
+  levers (FTS5 prefilter, sqlite-vec, process-wide embedding cache,
+  transactional multi-row writes) that got us to ~8ms p50 recall @ 10K.
+- **`docs/agent-integration.md`** — new "Using the cf-* slash-command
+  prompts" section. New "Reading MCP Resources" section guiding agents to
+  pull `memory://conventions` / `memory://decisions` at session start as
+  stable reference material instead of calling tools. Tool count updates.
+- **`docs/getting-started.md`** — tool count + test count updates.
+
+### Added
+- **`docs/skills.md`** (303 lines, new) — procedural memory concept,
+  slug rules, walkthroughs of all 6 skill tools, two end-to-end examples
+  (`review-pr` and `run-migration`), Resources + Prompts integration,
+  best practices.
+- **`docs/mcp-primitives.md`** (326 lines, new) — end-to-end documentation
+  of MCP Resources and Prompts as shipped by the server. All 6 `memory://`
+  URIs with response shapes, all 5 `cf-*` prompts with exact template
+  text (verified against `src/server.ts` getPrompt handler), client
+  compatibility matrix for April 2026 (Claude Code / Claude Desktop /
+  Cursor / Continue / Codex / OpenCode), and a Tools-vs-Resources-vs-Prompts
+  decision guide.
+
+### Fixed (accumulated doc drift)
+- `CONTEXT_FABRIC_DIR` → `CONTEXT_FABRIC_HOME` (the former never existed).
+- `LOG_LEVEL` → `CONTEXT_FABRIC_LOG_LEVEL` (the former never existed in
+  code; docs had wishful-thinking).
+- Embedding model corrected across all docs from `all-MiniLM-L6-v2` to
+  `bge-small-en`. The MiniLM string lived in `config.yaml`'s sample block
+  from v0.2 onward but was never actually used by the runtime; the
+  `EmbeddingService` constructor has always defaulted to `BGESmallEN`.
+  Docs now acknowledge this honestly.
+- Skill tool names corrected from `create/list/get/invoke/remove` to
+  `create/list/get/invoke/update/delete` (matches `src/server.ts`).
+- Smithery registry metadata was three minor versions stale.
+
+### Intentionally left untouched
+- `docs/wiki/*` — a separately-maintained mirror of the GitHub Wiki that
+  drifted independently. Will be handled as a separate sync, or deleted
+  entirely, in a future release.
+
+---
+
 ## [0.12.0] - 2026-04-21
 
 ### Theme: Agent Ergonomics — Skills, Resources, Prompts, ImportDocs, Eval harness

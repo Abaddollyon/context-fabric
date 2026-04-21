@@ -1,15 +1,19 @@
 # Memory Types
 
-Context Fabric organizes knowledge into six memory types across three storage layers. Memories route automatically -- you store content and the system figures out where it belongs.
+Context Fabric organizes knowledge into seven primary memory types (plus legacy aliases) across three storage layers. Memories route automatically -- you store content and the system figures out where it belongs.
 
 ## Table of Contents
 
 - [Memory Types](#memory-types-1)
+  - [Legacy Type Aliases](#legacy-type-aliases)
 - [The Three Layers](#the-three-layers)
   - [L1: Working Memory](#l1-working-memory)
   - [L2: Project Memory](#l2-project-memory)
   - [L3: Semantic Memory](#l3-semantic-memory)
 - [Smart Router](#smart-router)
+- [Provenance (v0.11)](#provenance-v011)
+- [Dedup-on-store (v0.11)](#dedup-on-store-v011)
+- [Bi-temporal reasoning (v0.11)](#bi-temporal-reasoning-v011)
 - [Decay Algorithm](#decay-algorithm)
 - [Promotion and Demotion](#promotion-and-demotion)
 
@@ -25,6 +29,23 @@ Every memory has a `type` that describes what kind of knowledge it represents. T
 | `convention` | L3 | Code style, naming conventions, folder structure rules |
 | `scratchpad` | L1 | Temporary notes, TODOs, session-scoped reminders |
 | `relationship` | L3 | Domain relationships, entity connections, user preferences |
+| `skill` | L2 | Reusable instruction blocks agents can invoke (procedural memory). See [Skills](skills.md) |
+
+### Legacy Type Aliases
+
+The following types are preserved for backwards compatibility with stores created before v0.5:
+
+| Legacy Type | Notes |
+|-------------|-------|
+| `code` | Older alias for `code_pattern` |
+| `message` | Raw chat message capture — replaced by event-driven capture |
+| `thought` | Free-form agent observation — fold into `scratchpad` for new writes |
+| `observation` | Ambient observation — fold into `scratchpad` |
+| `documentation` | Imported docs — new writes should use `convention` with the `doc` tag |
+| `error` | Raw error capture — replaced by `bug_fix` + `context.reportEvent` |
+| `summary` | Auto-generated summary entries — created internally by `context.summarize` |
+
+These types will still load and recall correctly; new storage should prefer the primary set above.
 
 > [!TIP]
 > You do not need to specify the layer when storing a memory. The Smart Router automatically selects the best layer based on the memory type, tags, and TTL. See [Smart Router](#smart-router) below.
@@ -108,7 +129,7 @@ Long-term, cross-project knowledge with semantic vector search. This is the AI's
 | **TTL** | Decay-based (not time-based) |
 | **Persistence** | File-based (survives restarts) |
 | **Search** | In-process cosine similarity over embedding vectors |
-| **Embedding Model** | `Xenova/all-MiniLM-L6-v2` (384 dimensions, ONNX) |
+| **Embedding Model** | `bge-small-en` (384 dimensions, ONNX via `fastembed-js`, in-process). The `embedding.model` config key is retained as a legacy string but is not used by the current runtime |
 
 **Typical contents:**
 - Reusable code patterns across projects
@@ -118,6 +139,8 @@ Long-term, cross-project knowledge with semantic vector search. This is the AI's
 
 > [!NOTE]
 > All vector operations run in-process — no external vector database required. Cosine similarity is computed in a linear scan over SQLite rows, which is fast for typical memory counts (under 10K).
+
+For L3 > ~50K memories, install `sqlite-vec` (`npm i sqlite-vec`) to enable ANN-accelerated recall. Falls back gracefully to the FTS5 prefilter if the extension fails to load. Set `CF_DISABLE_SQLITE_VEC=1` to force the fallback. See [Configuration > sqlite-vec](configuration.md#sqlite-vec-optional-ann-acceleration).
 
 ## Smart Router
 
@@ -169,8 +192,144 @@ Rules are evaluated in priority order. The first match wins.
 | 4 | Type = `convention` | L3 | 0.90 |
 | 4 | Type = `decision` | L2 | 0.85 |
 | 4 | Type = `bug_fix` | L2 | 0.85 |
+| 4 | Type = `skill` | L2 | 0.90 |
 | 4 | Type = `relationship` | L3 | 0.85 |
 | 5 | Default (no match) | L2 | 0.60 |
+
+## Provenance (v0.11)
+
+Every memory can carry a structured **citation block** explaining who, where, and when it was captured. Stored on `metadata.provenance`. The schema is a strict Zod object (unknown keys are rejected) so an LLM can't silently pollute your store.
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sessionId` | string | Session the memory was captured in |
+| `eventId` | string | Originating `context.reportEvent` ID, if any |
+| `toolCallId` | string | MCP tool-call ID that produced this memory |
+| `filePath` | string | Source file the memory refers to |
+| `lineStart`, `lineEnd` | number | Line range in that file |
+| `commitSha` | string | Git commit the memory was captured at |
+| `sourceUrl` | string (URL) | External URL (spec, ticket, doc) |
+| `capturedAt` | number (epoch ms) | Auto-stamped by the engine when omitted |
+
+If the caller supplies any `provenance` block without `capturedAt`, the engine stamps it at store time. No database migration is needed — `metadata` is a JSON blob; the schema is enforced at the tool layer only.
+
+### Example
+
+```json
+{
+  "type": "bug_fix",
+  "content": "Race condition in token refresh: added Mutex around refresh().",
+  "metadata": {
+    "tags": ["auth", "race-condition"],
+    "provenance": {
+      "sessionId": "sess-2026-04-21-am",
+      "filePath": "src/auth/token.ts",
+      "lineStart": 42,
+      "lineEnd": 58,
+      "commitSha": "abc1234",
+      "sourceUrl": "https://github.com/org/repo/issues/512"
+    }
+  }
+}
+```
+
+## Dedup-on-store (v0.11)
+
+L3 memories go through a cosine near-duplicate check at store time. If a new memory's embedding has cosine similarity ≥ `threshold` (default **0.95**) with an existing L3 row, the default behavior is to **skip the insert** and return the existing memory annotated with a `_dedupe` block explaining why.
+
+> [!NOTE]
+> Dedup runs on L3 only. L1 and L2 never dedup — scratchpads and project notes are frequently near-duplicates by design.
+
+### Strategies
+
+| Strategy | Behavior |
+|----------|----------|
+| `skip` *(default)* | Return the existing memory with `_dedupe: { strategy: 'skip', similarity, existingId }`. No insert |
+| `merge` | Union `tags`, shallow-merge `metadata` (including `provenance`), touch `updatedAt` on the existing row, return it with `_dedupe: { strategy: 'merge', ... }` |
+| `allow` | Bypass dedup entirely. Always insert |
+
+### Passing dedupe config
+
+On the MCP surface, pass dedup config via `metadata.dedupe`. The engine accepts either `options.dedupe` (internal API) or `options.metadata.dedupe` (MCP convenience) and will not persist the key:
+
+```json
+{
+  "type": "code_pattern",
+  "layer": 3,
+  "content": "Use `Promise.allSettled` for batch HTTP calls that may fail independently.",
+  "metadata": {
+    "tags": ["patterns", "http"],
+    "dedupe": { "strategy": "merge", "threshold": 0.92 }
+  }
+}
+```
+
+On merge, the returned memory looks like:
+
+```json
+{
+  "id": "existing-memory-uuid",
+  "layer": 3,
+  "_dedupe": {
+    "strategy": "merge",
+    "similarity": 0.97,
+    "existingId": "existing-memory-uuid"
+  }
+}
+```
+
+## Bi-temporal reasoning (v0.11)
+
+L3 rows track **two** time dimensions: when they were created (`valid_from`) and when they were superseded (`valid_until`, nullable). This lets you ask "what did the system believe on 2026-03-01?" without losing history.
+
+### Schema columns (L3 only)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `valid_from` | INTEGER (epoch ms) | When the fact became true. Defaults to `created_at` |
+| `valid_until` | INTEGER (epoch ms, nullable) | When the fact was superseded. `NULL` means "currently valid" |
+| `supersedes_id` | TEXT (nullable) | ID of the older row this one replaces |
+| `superseded_by_id` | TEXT (nullable) | ID of the newer row that replaced this one |
+
+### Storing a supersession
+
+Set `metadata.supersedes = <old-id>` when you store the new fact. In a single transaction the engine:
+
+1. Stamps `valid_until = now` and `superseded_by_id = new-id` on the old row.
+2. Sets `supersedes_id = old-id` on the new row.
+
+```json
+{
+  "type": "decision",
+  "layer": 3,
+  "content": "Use Postgres for primary data store (migrated from DynamoDB Oct 2026).",
+  "metadata": {
+    "tags": ["db", "architecture"],
+    "supersedes": "e3f1a2d4-0000-4000-8000-000000000001"
+  }
+}
+```
+
+### Recall options
+
+`context.recall` gains two bi-temporal controls:
+
+| Option | Default | Effect |
+|--------|---------|--------|
+| `includeSuperseded` | `false` | When `true`, returns rows whose `valid_until` is set |
+| `asOf` | *(unset)* | Epoch ms. Returns rows where `valid_from ≤ asOf AND (valid_until IS NULL OR valid_until > asOf)`. Overrides the default hide-superseded behavior with a full bi-temporal window |
+
+```json
+{
+  "query": "primary database choice",
+  "asOf": 1756684800000,
+  "limit": 5
+}
+```
+
+The above returns the decision set that was *current* on 2025-09-01 — even if that decision has since been superseded.
 
 ## Decay Algorithm
 

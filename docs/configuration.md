@@ -49,17 +49,19 @@ ttl:
   # Minimum access count for L3 memories to resist decay
   l3AccessThreshold: 3
 
+  # Relevance score below which an L3 memory is deleted (pinned:true exempts)
+  l3DecayThreshold: 0.2
+
 # ── Embedding ────────────────────────────────────────────────────────────────
+# ── Embedding ─────────────────────────────────────────────────────────────────────────
+# Note: these keys are reserved for future multi-model support. The current
+# runtime always loads `bge-small-en` (384-d) via fastembed-js regardless of
+# what you put here. See the Embedding section below.
 embedding:
-  # ONNX model for generating embeddings (used by L3 semantic search)
-  model: "Xenova/all-MiniLM-L6-v2"
-
-  # Embedding vector dimensions (must match the model)
-  dimension: 384
-
-  # Number of texts to embed per batch
+  model: "Xenova/all-MiniLM-L6-v2"   # legacy/ignored — see note above
+  dimension: 384                       # matches bge-small-en
   batchSize: 32
-
+  timeoutMs: 30000                     # max ms per embed() call, prevents ONNX hangs
 # ── Context Window ───────────────────────────────────────────────────────────
 context:
   # Max L1 working memories included in context.getCurrent
@@ -80,22 +82,25 @@ context:
 
 ## Environment Variables
 
-Environment variables override config file values. Useful for Docker deployments and CI.
+Environment variables override a subset of runtime behavior. Useful for Docker deployments, CI, and test isolation.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CONTEXT_FABRIC_DIR` | `~/.context-fabric` | Root storage directory for all data |
-| `FASTEMBED_CACHE_PATH` | *(auto)* | ONNX model cache directory (set automatically by Docker image) |
-| `LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
-| `L1_DEFAULT_TTL` | `3600` | L1 working memory TTL in seconds |
-| `L3_DECAY_DAYS` | `14` | L3 decay period in days |
+| `CONTEXT_FABRIC_HOME` | `~/.context-fabric` | Root storage directory for config, L2, and L3 databases |
+| `CONTEXT_FABRIC_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
+| `CONTEXT_FABRIC_DEFAULT_PROJECT` | *(cwd)* | Fallback `projectPath` for primitives that don't take one (MCP Resources, Prompts) and for tool calls that omit `projectPath` |
+| `FASTEMBED_CACHE_PATH` | *(auto)* | ONNX model cache directory. Auto-set inside the Docker image so the model is baked in |
+| `CF_DISABLE_SQLITE_VEC` | *(unset)* | Set to `1` to force the FTS5 prefilter even when the optional `sqlite-vec` extension is installed. See [sqlite-vec](#sqlite-vec-optional-ann-acceleration) |
 
 > [!TIP]
-> Set `LOG_LEVEL=debug` to see detailed routing decisions, embedding operations, and layer queries. Useful for troubleshooting.
+> Set `CONTEXT_FABRIC_LOG_LEVEL=debug` to see detailed routing decisions, embedding operations, and layer queries. Useful for troubleshooting.
+
+> [!NOTE]
+> TTL and decay settings (`l1Default`, `l3DecayDays`, `l3AccessThreshold`, `l3DecayThreshold`) are controlled via `config.yaml` only — there are no environment-variable shortcuts for them.
 
 ## Storage Paths
 
-Context Fabric stores all data under `~/.context-fabric/` (or `$CONTEXT_FABRIC_DIR`).
+Context Fabric stores all data under `~/.context-fabric/` (or `$CONTEXT_FABRIC_HOME`).
 
 ```text
 ~/.context-fabric/
@@ -148,14 +153,19 @@ docker run --rm -v context-fabric-data:/data alpine tar czf - /data \
 | `l1Default` | number | `3600` | Default TTL for L1 memories (seconds) |
 | `l3DecayDays` | number | `14` | Days before L3 memories start decaying |
 | `l3AccessThreshold` | number | `3` | Minimum access count to resist L3 decay |
+| `l3DecayThreshold` | number | `0.2` | Relevance score below which L3 memories are deleted. `pinned:true` exempts a memory |
 
 ### `embedding`
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `model` | string | `Xenova/all-MiniLM-L6-v2` | ONNX embedding model identifier |
-| `dimension` | number | `384` | Embedding vector dimensions |
+| `model` | string | `Xenova/all-MiniLM-L6-v2` | **Legacy / not wired to the runtime.** The current engine always uses `bge-small-en` regardless of this value. Reserved for future multi-model support |
+| `dimension` | number | `384` | Embedding vector dimensions (matches `bge-small-en`) |
 | `batchSize` | number | `32` | Batch size for embedding generation |
+| `timeoutMs` | number | `30000` | Max milliseconds for a single `embed()` call. Prevents ONNX from hanging the MCP process |
+
+> [!IMPORTANT]
+> The runtime ships with **`bge-small-en`** (384 dimensions, ONNX via `fastembed-js`, in-process). The `embedding.model` key is preserved in `config.yaml` for backwards compatibility but is currently ignored. When multi-model support lands it will respect this value.
 
 ### `context`
 
@@ -166,6 +176,38 @@ docker run --rm -v context-fabric-data:/data alpine tar czf - /data \
 | `maxPatterns` | number | `5` | Max code patterns in context window |
 | `maxSuggestions` | number | `5` | Max suggestions in context window |
 | `maxGhostMessages` | number | `5` | Max ghost messages in context window |
+
+## sqlite-vec (optional ANN acceleration)
+
+For L3 memory stores under ~50K rows, Context Fabric's default FTS5 prefilter + in-process cosine scan is already sub-10ms at p50 and requires zero native dependencies. For larger stores, you can opt into [`sqlite-vec`](https://github.com/asg017/sqlite-vec) — a loadable SQLite extension that provides ANN-accelerated vector search.
+
+### When it matters
+
+| L3 row count | Default path (FTS5 prefilter) | With `sqlite-vec` |
+|--------------|:-----------------------------:|:-----------------:|
+| up to ~10K | ~8ms p50 | sub-millisecond |
+| 10K–50K | ~8–30ms p50 | sub-millisecond |
+| 50K+ | degrades linearly | sub-millisecond |
+
+Most users never need to install it. Reach for it only if `context.metrics` shows consistently slow L3 recall.
+
+### Install
+
+```bash
+npm i sqlite-vec
+```
+
+That's it. On next startup the engine detects the module, loads the extension into both SQLite handles, and opts into the vec-backed recall path. No config changes required.
+
+### Disable or force fallback
+
+If you have `sqlite-vec` installed but want to benchmark the pure-JS path, or if extension loading fails on your platform:
+
+```bash
+CF_DISABLE_SQLITE_VEC=1 node dist/server.js
+```
+
+The engine falls back cleanly to the FTS5 prefilter regardless — if `sqlite-vec` can't be loaded (Windows without proper build tools, sandboxed environments), you get a one-line warning and the default code path.
 
 ---
 

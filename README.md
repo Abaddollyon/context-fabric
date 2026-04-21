@@ -44,14 +44,14 @@ Context Fabric is an [MCP](https://modelcontextprotocol.io/) server that gives y
 - **Bi-temporal memory** -- explicit `supersedes` linkage + `validFrom` / `validUntil` columns. Query as-of a past point in time with `recall({ asOf })`. Zep-style temporal reasoning, fully local.
 
 ### Agent ergonomics (v0.12)
-- **Skills** -- procedural memory (`MemoryType = "skill"`) with slug, triggers, parameters, and usage stats. Five tools: `context.skill.create` / `list` / `get` / `invoke` / `remove`. Invocation is logged and reflected in list ordering.
+- **Skills** -- procedural memory (`MemoryType = "skill"`) with slug, triggers, parameters, and usage stats. Six tools: `context.skill.create` / `list` / `get` / `invoke` / `update` / `delete`. Invocation is logged and reflected in list ordering.
 - **MCP Resources** -- browseable context under `memory://`: `memory://skills`, `memory://recent`, `memory://conventions`, `memory://decisions`, plus templates `memory://skill/{slug}` (Markdown) and `memory://memory/{id}` (JSON).
 - **MCP Prompts** -- slash-commands for agents: `cf-orient`, `cf-capture-decision`, `cf-review-session`, `cf-search-code`, `cf-invoke-skill`.
-- **`context.importDocs`** -- one-shot seed from `CLAUDE.md`, `AGENTS.md`, `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `ARCHITECTURE.md`. Idempotent via tag-dedup.
+- **`context.importDocs`** -- one-shot seed from `CLAUDE.md`, `AGENTS.md`, `README.md`, `CHANGELOG.md`, `ROADMAP.md`, `CONTRIBUTING.md`. Idempotent via tag-dedup.
 - **Recall-quality harness** -- `npm run bench:quality` measures recall@k + MRR against a 20-pair golden set across {0, 100, 1000} distractor pool sizes.
 
 ### Operations & DX
-- **24 MCP tools** -- store, storeBatch, recall, orient, getCurrent, summarize, searchCode, CRUD (get/update/delete/list), reportEvent, setup, backup, export, import, metrics, health, importDocs, and 5 skill tools.
+- **25 MCP tools** -- store, storeBatch, recall, orient, getCurrent, summarize, searchCode, CRUD (get/update/delete/list), reportEvent, setup, backup, export, import, metrics, health, importDocs, and 6 skill tools (create/list/get/invoke/update/delete).
 - **Graceful shutdown** -- SIGTERM/SIGINT drain in-flight calls, checkpoint WAL, close cleanly.
 - **Data integrity** -- startup `PRAGMA quick_check`, explicit transactions on every multi-row write, `VACUUM INTO`-based online backups.
 - **Observability** -- structured logger + `context.metrics` + `context.health` tools.
@@ -147,7 +147,7 @@ Numbers on a commodity dev laptop (warm run, 2026-04-21):
 |---|---|
 | L3 `recall()` @ 10K memories (FTS5 prefilter) | **~8ms p50**, <100ms p99 |
 | L3 `recallVec()` @ 10K (sqlite-vec, opt-in) | sub-ms p50 |
-| Full test suite (697 tests, 37 files) | **68s wall** / 9s import |
+| Full test suite (719 tests, 40 files) | **~66s wall** / <1s import |
 | Incremental `tsc` rebuild | **~0.8s** |
 | Server cold start (with L3 warm) | < 1s |
 
@@ -174,7 +174,9 @@ Memories auto-route to the right layer. Scratchpad notes go to L1 (ephemeral). D
 |----------|-------------|
 | [Getting Started](docs/getting-started.md) | Installation, first run, Docker and local setup |
 | [CLI Setup](docs/cli-setup.md) | Per-CLI configuration (all 7 supported CLIs) |
-| [Tools Reference](docs/tools-reference.md) | All 18 MCP tools with full parameter docs |
+| [Tools Reference](docs/tools-reference.md) | All 25 MCP tools with full parameter docs |
+| [Skills](docs/skills.md) | Procedural memory — create, invoke, and compose reusable instruction blocks |
+| [MCP Primitives](docs/mcp-primitives.md) | Resources (`memory://...`) and Prompts (`cf-*` slash-commands) |
 | [Memory Types](docs/memory-types.md) | Type system, three layers, [smart routing](docs/memory-types.md#smart-router), [decay](docs/memory-types.md#decay-algorithm) |
 | [Configuration](docs/configuration.md) | Storage paths, TTL, embedding, environment variables |
 | [Agent Integration](docs/agent-integration.md) | System prompt instructions for automatic tool usage |
