@@ -441,11 +441,13 @@ export class ContextEngine {
     // Ranker 1: Keyword (BM25)
     const keywordResults = this.recallKeyword(query, fetchLimit, layers, filter);
 
-    // Ranker 2: Semantic (vector cosine) — only L3 contributes semantic scores
+    // Ranker 2: Semantic (vector cosine) — only L3 contributes semantic scores.
+    // v0.8: Use recallPrefiltered() so the vector scan is bounded to the
+    // BM25 candidate pool instead of the entire L3 table.
     const semanticResults: RankedMemory[] = [];
     if (layers.includes(MemoryLayer.L3_SEMANTIC)) {
       try {
-        const l3Results = await this.l3.recall(query, fetchLimit);
+        const l3Results = await this.l3.recallPrefiltered(query, fetchLimit);
         for (const r of l3Results) {
           if (this.matchesFilter(r, filter)) {
             semanticResults.push({ ...r, layer: MemoryLayer.L3_SEMANTIC });

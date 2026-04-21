@@ -282,6 +282,44 @@ export class SemanticMemoryLayer {
     return scored.slice(0, limit).map(({ row, similarity }) => this.rowToScoredMemory(row, similarity));
   }
 
+  /**
+   * v0.8 scalable recall: pre-filter candidates using FTS5 BM25 before
+   * running vector cosine only on the pool. Trades a small recall hit
+   * (memories with zero token overlap are missed) for O(poolSize) work
+   * instead of O(N) over the full L3 table.
+   *
+   * Falls back to full-scan recall() when:
+   *   - the FTS5 sanitizer strips the query to empty (no tokens)
+   *   - FTS5 returns zero candidates (no keyword overlap anywhere)
+   *
+   * Used by the hybrid recall path in engine.ts. Pure semantic mode still
+   * goes through recall() to preserve its "cosine over everything" contract.
+   */
+  async recallPrefiltered(query: string, limit = 10, poolSize = 200): Promise<ScoredMemory[]> {
+    if (!query.trim()) return [];
+
+    const sanitized = SemanticMemoryLayer.sanitizeFTS5Query(query);
+    if (!sanitized) return this.recall(query, limit);
+
+    let rows: DbRow[];
+    try {
+      rows = this.stmtSearchBM25.all(sanitized, poolSize) as unknown as DbRow[];
+    } catch {
+      return this.recall(query, limit);
+    }
+
+    if (rows.length === 0) return this.recall(query, limit);
+
+    const queryEmbedding = await this.embedder.embed(query);
+    const scored = rows.map((row) => {
+      const embedding: number[] = JSON.parse(row.embedding);
+      return { row, similarity: cosineSimilarity(queryEmbedding, embedding) };
+    });
+
+    scored.sort((a, b) => b.similarity - a.similarity);
+    return scored.slice(0, limit).map(({ row, similarity }) => this.rowToScoredMemory(row, similarity));
+  }
+
   async get(id: string): Promise<Memory | undefined> {
     const row = this.stmtGetById.get(id) as DbRow | undefined;
     return row ? this.rowToMemory(row) : undefined;
