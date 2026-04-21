@@ -272,22 +272,30 @@ export class ProjectMemoryLayer {
       pinned,
     };
 
-    this.stmtInsert.run(
-      memory.id,
-      memory.type,
-      memory.content,
-      JSON.stringify(memory.metadata || {}),
-      JSON.stringify(tags || []),
-      memory.createdAt as number,
-      memory.updatedAt as number,
-      memory.accessCount ?? 0,
-      pinned ? 1 : 0,
-    );
+    // Atomic: memory row + tag rows succeed or fail together.
+    this.db.exec('BEGIN');
+    try {
+      this.stmtInsert.run(
+        memory.id,
+        memory.type,
+        memory.content,
+        JSON.stringify(memory.metadata || {}),
+        JSON.stringify(tags || []),
+        memory.createdAt as number,
+        memory.updatedAt as number,
+        memory.accessCount ?? 0,
+        pinned ? 1 : 0,
+      );
 
-    if (tags && tags.length > 0) {
-      for (const tag of tags) {
-        this.stmtInsertTag.run(memory.id, tag);
+      if (tags && tags.length > 0) {
+        for (const tag of tags) {
+          this.stmtInsertTag.run(memory.id, tag);
+        }
       }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
     }
 
     return memory;
@@ -453,6 +461,9 @@ export class ProjectMemoryLayer {
 
     const summaryContent = this.generateSummary(oldMemories);
 
+    // Create the summary memory first (nested transaction is fine via savepoint
+    // semantics in SQLite, but store() owns its own tx — so let it commit,
+    // then wrap only the delete loop in a tx keyed on success of store()).
     const summary = await this.store(
       summaryContent,
       'summary',
@@ -467,8 +478,23 @@ export class ProjectMemoryLayer {
       ['summary', 'archived']
     );
 
-    for (const memory of oldMemories) {
-      this.stmtDeleteById.run(memory['id'] as string);
+    // Atomic: either all originals deleted or none. If this fails, also
+    // remove the summary row so the layer is left in a consistent state.
+    this.db.exec('BEGIN');
+    try {
+      for (const memory of oldMemories) {
+        this.stmtDeleteById.run(memory['id'] as string);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      // Roll back the summary too — it's a separate committed tx.
+      try {
+        this.stmtDeleteById.run(summary.id);
+      } catch {
+        /* best-effort cleanup */
+      }
+      throw err;
     }
 
     return { summaryId: summary.id, summarizedCount: oldMemories.length, summaryContent };
