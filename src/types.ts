@@ -60,6 +60,23 @@ export interface RelationshipEdge {
   strength: number; // 0-1
 }
 
+/**
+ * v0.11: Structured citation block. Answers "where did this memory come from?".
+ * All fields are optional; at least one should be set if provenance is provided.
+ * `capturedAt` is auto-stamped by the engine when omitted.
+ */
+export interface Provenance {
+  sessionId?: string;      // originating session
+  eventId?: string;        // tie to a CLIEvent / reportEvent call
+  toolCallId?: string;     // MCP tool call id
+  filePath?: string;       // source file that produced this memory
+  lineStart?: number;
+  lineEnd?: number;
+  commitSha?: string;      // git commit (or short sha) at capture time
+  sourceUrl?: string;      // e.g. GitHub permalink, docs URL
+  capturedAt?: number;     // epoch ms; auto-stamped by engine.store() if omitted
+}
+
 export interface MemoryMetadata {
   title?: string;
   tags: string[];
@@ -74,6 +91,8 @@ export interface MemoryMetadata {
   cliType: string;
   // 1–5, user-set priority. Default 3. Higher values rank above lower in recall and context window.
   weight?: number;
+  // v0.11: optional citation block — auto-stamped with capturedAt when provided.
+  provenance?: Provenance;
   // Allow additional legacy fields
   [key: string]: unknown;
 }

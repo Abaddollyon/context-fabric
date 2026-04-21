@@ -221,6 +221,12 @@ export class ContextEngine {
       ...options.metadata,
     };
 
+    // v0.11: auto-stamp provenance.capturedAt when caller supplied a
+    // provenance block without a timestamp. Only stamp — never overwrite.
+    if (metadata.provenance && metadata.provenance.capturedAt === undefined) {
+      metadata.provenance = { ...metadata.provenance, capturedAt: Date.now() };
+    }
+
     // Store in appropriate layer
     let memory: Memory;
 
