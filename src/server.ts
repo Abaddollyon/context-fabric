@@ -75,6 +75,9 @@ export const StoreMemorySchema = z.object({
     // v0.11: optional provenance block — who/where/when this memory came from.
     provenance: ProvenanceSchema.optional()
       .describe('Citation block tying this memory to its source (session, tool call, file, commit, URL).'),
+    // v0.11: bi-temporal supersession — id of the L3 memory this one replaces.
+    supersedes: z.string().uuid().optional()
+      .describe('ID of an existing L3 memory this one supersedes. The predecessor is marked invalid (valid_until = now) and linked in both directions.'),
   }),
   pinned: z.boolean().optional()
     .describe('Pin this memory to protect it from decay and summarization. Pinned memories are never automatically deleted.'),
@@ -96,6 +99,11 @@ export const RecallSchema = z.object({
     projectPath: z.string().optional(),
   }).optional(),
   sessionId: z.string().optional(),
+  // v0.11: bi-temporal recall controls.
+  includeSuperseded: z.boolean().default(false)
+    .describe('Include memories that have been explicitly superseded. Default false (only currently-valid memories are returned).'),
+  asOf: z.number().int().positive().optional()
+    .describe('Epoch ms. Query the state of memory as it existed at this point in time. Overrides the default "hide superseded" behavior with bi-temporal windowing.'),
 }).strict();
 
 export const GetCurrentContextSchema = z.object({
@@ -764,6 +772,8 @@ async function handleRecall(args: unknown): Promise<unknown> {
       tags: params.filter?.tags,
       projectPath: params.filter?.projectPath,
     },
+    includeSuperseded: params.includeSuperseded,
+    asOf: params.asOf,
   });
   
   // Filter by threshold, then apply offset/limit pagination.

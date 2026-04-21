@@ -59,6 +59,10 @@ export interface RecallOptions {
     tags?: string[];
     projectPath?: string;
   };
+  /** v0.11: bi-temporal. Include memories whose valid_until is set. Default false. */
+  includeSuperseded?: boolean;
+  /** v0.11: bi-temporal. Query state as-of this epoch ms. Default now (hides superseded). */
+  asOf?: number;
 }
 
 export interface RankedMemory extends ScoredMemory {
@@ -227,6 +231,11 @@ export class ContextEngine {
     delete metaFromOptions.dedupe;
     const dedupe: DedupeConfig = { ...(dedupeFromMeta ?? {}), ...(options.dedupe ?? {}) };
 
+    // v0.11: pull supersedes out the same way — it's a control flag, not
+    // content. Only applies when targetLayer === L3.
+    const supersedesId = metaFromOptions.supersedes as string | undefined;
+    delete metaFromOptions.supersedes;
+
     // Prepare metadata
     const metadata: MemoryMetadata = {
       tags: options.tags || [],
@@ -302,6 +311,31 @@ export class ContextEngine {
 
     memory.layer = targetLayer;
     this.log('debug', `Stored ${type} in L${targetLayer}: ${memory.id}`);
+
+    // v0.11: bi-temporal supersession — wire the link after a successful
+    // L3 insert. Silently no-ops for unknown predecessor ids so callers
+    // can't accidentally orphan memories via a ghost pointer.
+    if (
+      targetLayer === MemoryLayer.L3_SEMANTIC
+      && typeof supersedesId === 'string'
+      && supersedesId.length > 0
+    ) {
+      try {
+        const linked = await this.l3.supersede(supersedesId, memory.id);
+        if (linked) {
+          // Re-read to surface the fresh temporal block on the returned memory.
+          const refreshed = await this.l3.get(memory.id);
+          if (refreshed) {
+            refreshed.layer = MemoryLayer.L3_SEMANTIC;
+            memory = refreshed;
+          }
+        } else {
+          this.log('warn', `supersedes target not found: ${supersedesId}`);
+        }
+      } catch (err) {
+        this.log('warn', 'supersede() failed:', err);
+      }
+    }
 
     return memory;
   }
@@ -395,9 +429,16 @@ export class ContextEngine {
     metrics.inc(`recall.calls.${mode}`);
     const recallStart = Date.now();
 
+    // v0.11: bi-temporal post-filter. Fetch more candidates so hiding
+    // superseded rows doesn't starve the result set.
+    const fetchLimit = options.includeSuperseded ? limit : limit * 2;
+    const applyTemporal = (rows: RankedMemory[]): RankedMemory[] =>
+      ContextEngine.applyBiTemporalFilter(rows, options);
+
     if (mode === 'keyword') {
       try {
-        return await this.recallKeyword(query, limit, layers, options.filter);
+        const raw = await this.recallKeyword(query, fetchLimit, layers, options.filter);
+        return applyTemporal(raw).slice(0, limit);
       } finally {
         metrics.observe(`recall.latency_ms.${mode}`, Date.now() - recallStart);
       }
@@ -405,7 +446,8 @@ export class ContextEngine {
 
     if (mode === 'hybrid') {
       try {
-        return await this.recallHybrid(query, limit, layers, options.filter);
+        const raw = await this.recallHybrid(query, fetchLimit, layers, options.filter);
+        return applyTemporal(raw).slice(0, limit);
       } finally {
         metrics.observe(`recall.latency_ms.${mode}`, Date.now() - recallStart);
       }
@@ -415,7 +457,7 @@ export class ContextEngine {
     // Search L3 (semantic) if included
     if (layers.includes(MemoryLayer.L3_SEMANTIC)) {
       try {
-        const l3Results = await this.l3.recall(query, limit);
+        const l3Results = await this.l3.recall(query, fetchLimit);
         for (const r of l3Results) {
           if (this.matchesFilter(r, options.filter)) {
             results.push({ ...r, layer: MemoryLayer.L3_SEMANTIC });
@@ -449,9 +491,45 @@ export class ContextEngine {
     // Sort by relevance (with weight multiplier) and limit
     const weightedSimilarity = (m: RankedMemory) =>
       m.similarity * ((m.metadata?.weight ?? 3) / 3);
-    return results
-      .sort((a, b) => weightedSimilarity(b) - weightedSimilarity(a))
-      .slice(0, limit);
+    return applyTemporal(
+      results.sort((a, b) => weightedSimilarity(b) - weightedSimilarity(a)),
+    ).slice(0, limit);
+  }
+
+  /**
+   * v0.11: apply bi-temporal filters in a single pass.
+   * - When `includeSuperseded` is true: no filtering.
+   * - When `asOf` is provided: a row is visible iff
+   *     validFrom <= asOf AND (validUntil === null OR validUntil > asOf)
+   * - Default (no asOf): hide any row with validUntil !== null (i.e.
+   *   anything that has been explicitly superseded).
+   *
+   * Memories outside L3 have no temporal metadata — they always pass.
+   */
+  static applyBiTemporalFilter(
+    rows: RankedMemory[],
+    options: RecallOptions,
+  ): RankedMemory[] {
+    if (options.includeSuperseded) return rows;
+    const asOf = options.asOf;
+
+    return rows.filter((r) => {
+      const temporal = (r.metadata as MemoryMetadata | undefined)?.temporal as
+        | { validFrom?: number; validUntil?: number | null }
+        | undefined;
+      if (!temporal) return true;
+
+      const validFrom = temporal.validFrom;
+      const validUntil = temporal.validUntil ?? null;
+
+      if (asOf !== undefined) {
+        if (typeof validFrom === 'number' && validFrom > asOf) return false;
+        if (validUntil !== null && validUntil <= asOf) return false;
+        return true;
+      }
+      // Default: hide anything that has been superseded.
+      return validUntil === null;
+    });
   }
 
   /**

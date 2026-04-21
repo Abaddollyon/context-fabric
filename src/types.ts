@@ -77,6 +77,18 @@ export interface Provenance {
   capturedAt?: number;     // epoch ms; auto-stamped by engine.store() if omitted
 }
 
+/**
+ * v0.11: bi-temporal metadata projected from L3 row columns. Populated by
+ * the L3 layer on rowToMemory. Null-valued fields mean "still current"
+ * (validUntil) or "never superseded" (supersedesId/supersededById).
+ */
+export interface TemporalInfo {
+  validFrom?: number;                     // epoch ms; defaults to createdAt
+  validUntil?: number | null;             // null = still valid
+  supersedesId?: string | null;           // this memory replaces
+  supersededById?: string | null;         // this memory was replaced by
+}
+
 export interface MemoryMetadata {
   title?: string;
   tags: string[];
@@ -93,6 +105,8 @@ export interface MemoryMetadata {
   weight?: number;
   // v0.11: optional citation block — auto-stamped with capturedAt when provided.
   provenance?: Provenance;
+  // v0.11: populated by L3 on recall/get from the bi-temporal columns.
+  temporal?: TemporalInfo;
   // Allow additional legacy fields
   [key: string]: unknown;
 }
