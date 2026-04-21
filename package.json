@@ -21,7 +21,8 @@
     "test:watch": "vitest",
     "test:watch:unit": "vitest tests/unit",
     "test:watch:integration": "vitest tests/integration",
-    "test:watch:e2e": "vitest tests/e2e"
+    "test:watch:e2e": "vitest tests/e2e",
+    "bench": "tsc && node --experimental-strip-types benchmarks/recall-latency.ts"
   },
   "repository": {
     "type": "git",
