@@ -7,6 +7,7 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { v4 as uuidv4 } from 'uuid';
 import { MemoryLayer, type Memory, type MemoryType, type MemoryMetadata, type SummaryResult } from '../types.js';
 import { sanitizeFTS5Query } from '../fts5.js';
+import { warnIfCorrupted } from '../db-integrity.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -53,6 +54,9 @@ export class ProjectMemoryLayer {
 
     this.dbPath = path.join(contextFabricDir, 'memory.db');
     this.db = new DatabaseSync(this.dbPath);
+
+    // v0.8: startup integrity check — warn (don't fail) on corruption.
+    warnIfCorrupted(this.db, `L2:${path.basename(this.dbPath)}`);
 
     this.initSchema();
     this.prepareStatements();

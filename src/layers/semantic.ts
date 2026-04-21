@@ -11,6 +11,7 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { Memory, MemoryType, MemoryMetadata, RelationshipEdge } from '../types.js';
 import { EmbeddingService } from '../embedding.js';
 import { sanitizeFTS5Query } from '../fts5.js';
+import { warnIfCorrupted } from '../db-integrity.js';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -80,6 +81,8 @@ export class SemanticMemoryLayer {
       fs.mkdirSync(baseDir, { recursive: true });
       const dbPath = path.join(baseDir, 'semantic.db');
       this.db = new DatabaseSync(dbPath);
+      // v0.8: startup integrity check — warn (don't fail) on corruption.
+      warnIfCorrupted(this.db, 'L3:semantic');
     }
 
     this.initSchema();
