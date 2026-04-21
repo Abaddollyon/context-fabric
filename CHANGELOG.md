@@ -7,6 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-04-21
+
+### Theme: Memory Intelligence
+
+First steps of the post-1.0 "Memory Intelligence" track. These three
+features move Context Fabric from "indexed storage" toward "knowledge
+system" — callers now get citation tracking, automatic deduplication,
+and explicit temporal reasoning, all while staying fully local with
+no LLM dependency.
+
+### Added
+
+- **Provenance (`src/types.ts` Provenance, `ProvenanceSchema` in
+  `src/server.ts`)** — optional structured citation block attached to
+  every memory. Fields: `sessionId`, `eventId`, `toolCallId`,
+  `filePath`, `lineStart`/`lineEnd`, `commitSha`, `sourceUrl`,
+  `capturedAt`. `engine.store()` auto-stamps `capturedAt` when
+  omitted. `ProvenanceSchema` is `.strict()` — unknown fields rejected
+  at the MCP boundary. Zero DB migration: rides through existing JSON
+  metadata blob at both L2 and L3.
+
+- **Dedup-on-store at L3** — writing the same fact twice no longer
+  creates duplicate rows. Cosine ≥ threshold (default `0.95`) is
+  treated as a duplicate; strategies are `skip` (default), `merge`
+  (union tags, merge provenance, touch), or `allow` (bypass). The
+  near-dup search uses the FTS5 BM25 prefilter pool (matching
+  `recallPrefiltered` semantics) so cost stays bounded as L3 grows.
+  Control passed via `options.dedupe` (engine API) or
+  `options.metadata.dedupe` (LLM-friendly; stripped before persist).
+  Returned memory carries an `_dedupe: { action, ofId, similarity }`
+  annotation for caller inspection. New helpers:
+  `SemanticMemoryLayer.findNearDuplicate()`,
+  `SemanticMemoryLayer.mergeInto()`.
+
+- **Bi-temporal memory at L3** — explicit supersession semantics for
+  facts that change over time. Idempotent schema migration adds
+  `valid_from`, `valid_until`, `supersedes_id`, `superseded_by_id`
+  columns plus an index on `valid_until`. `engine.store()` accepts
+  `metadata.supersedes` (uuid); on successful L3 insert it calls
+  `l3.supersede(oldId, newId)` which stamps `valid_until = now` on
+  the predecessor and links both rows in a single transaction.
+  `engine.recall()` gains `includeSuperseded` (default `false`,
+  hides stale rows) and `asOf` (epoch ms — query state as it existed
+  at that point in time; implements classic bi-temporal windowing).
+  The filter `ContextEngine.applyBiTemporalFilter()` is a pure static
+  helper wrapping all three recall modes; `fetchLimit` is doubled
+  during filtered recall so superseded hiding doesn't starve the
+  result set. New `TemporalInfo` type projected onto
+  `MemoryMetadata.temporal` by `L3.rowToMemory`.
+
+### Changed
+
+- `StoreMemorySchema.metadata.provenance` and
+  `StoreMemorySchema.metadata.supersedes` added.
+- `RecallSchema.includeSuperseded` and `RecallSchema.asOf` added
+  (both optional, backward compatible).
+- `engine.store()` now strips `dedupe` and `supersedes` from the
+  persisted metadata blob — they're control-plane, not content.
+
+### Tests
+
+- **697 passing** (up from 678), 37 test files. New suites:
+  `tests/unit/provenance.test.ts` (6), `tests/unit/dedup.test.ts` (7),
+  `tests/unit/bi-temporal.test.ts` (6).
+
+### Migration
+
+- No breaking changes. New columns are nullable; existing rows read
+  back as "valid_from = createdAt, validUntil = null".
+- New schema/API fields are all optional — callers pre-v0.11 keep
+  working unchanged.
+
 ## [0.10.1] - 2026-04-21
 
 ### Theme: Closing out the v0.8 stretch items
