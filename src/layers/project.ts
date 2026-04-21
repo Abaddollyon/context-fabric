@@ -7,6 +7,7 @@ import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { v4 as uuidv4 } from 'uuid';
 import { MemoryLayer, type Memory, type MemoryType, type MemoryMetadata, type SummaryResult } from '../types.js';
 import { sanitizeFTS5Query } from '../fts5.js';
+import { warnIfCorrupted } from '../db-integrity.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -53,6 +54,9 @@ export class ProjectMemoryLayer {
 
     this.dbPath = path.join(contextFabricDir, 'memory.db');
     this.db = new DatabaseSync(this.dbPath);
+
+    // v0.8: startup integrity check — warn (don't fail) on corruption.
+    warnIfCorrupted(this.db, `L2:${path.basename(this.dbPath)}`);
 
     this.initSchema();
     this.prepareStatements();
@@ -268,22 +272,30 @@ export class ProjectMemoryLayer {
       pinned,
     };
 
-    this.stmtInsert.run(
-      memory.id,
-      memory.type,
-      memory.content,
-      JSON.stringify(memory.metadata || {}),
-      JSON.stringify(tags || []),
-      memory.createdAt as number,
-      memory.updatedAt as number,
-      memory.accessCount ?? 0,
-      pinned ? 1 : 0,
-    );
+    // Atomic: memory row + tag rows succeed or fail together.
+    this.db.exec('BEGIN');
+    try {
+      this.stmtInsert.run(
+        memory.id,
+        memory.type,
+        memory.content,
+        JSON.stringify(memory.metadata || {}),
+        JSON.stringify(tags || []),
+        memory.createdAt as number,
+        memory.updatedAt as number,
+        memory.accessCount ?? 0,
+        pinned ? 1 : 0,
+      );
 
-    if (tags && tags.length > 0) {
-      for (const tag of tags) {
-        this.stmtInsertTag.run(memory.id, tag);
+      if (tags && tags.length > 0) {
+        for (const tag of tags) {
+          this.stmtInsertTag.run(memory.id, tag);
+        }
       }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
     }
 
     return memory;
@@ -449,6 +461,9 @@ export class ProjectMemoryLayer {
 
     const summaryContent = this.generateSummary(oldMemories);
 
+    // Create the summary memory first (nested transaction is fine via savepoint
+    // semantics in SQLite, but store() owns its own tx — so let it commit,
+    // then wrap only the delete loop in a tx keyed on success of store()).
     const summary = await this.store(
       summaryContent,
       'summary',
@@ -463,8 +478,23 @@ export class ProjectMemoryLayer {
       ['summary', 'archived']
     );
 
-    for (const memory of oldMemories) {
-      this.stmtDeleteById.run(memory['id'] as string);
+    // Atomic: either all originals deleted or none. If this fails, also
+    // remove the summary row so the layer is left in a consistent state.
+    this.db.exec('BEGIN');
+    try {
+      for (const memory of oldMemories) {
+        this.stmtDeleteById.run(memory['id'] as string);
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      // Roll back the summary too — it's a separate committed tx.
+      try {
+        this.stmtDeleteById.run(summary.id);
+      } catch {
+        /* best-effort cleanup */
+      }
+      throw err;
     }
 
     return { summaryId: summary.id, summarizedCount: oldMemories.length, summaryContent };
@@ -534,7 +564,36 @@ export class ProjectMemoryLayer {
   }
 
   close(): void {
+    // v0.8: Explicit WAL checkpoint before close so any pending WAL frames
+    // are flushed to the main DB file and the WAL is truncated. Guards
+    // against data loss on subsequent unclean exits.
+    try { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
     try { this.db.close(); } catch { /* ignore */ }
+  }
+
+  /**
+   * v0.8: Create a consistent snapshot of this L2 database at `destPath`
+   * using SQLite's VACUUM INTO. Safe to call while the database is in use
+   * (VACUUM INTO takes a read lock; writers block briefly on commit).
+   *
+   * Throws if `destPath` already exists — backups must not clobber.
+   */
+  backup(destPath: string): { path: string; size: number } {
+    if (fs.existsSync(destPath)) {
+      throw new Error(`backup target already exists: ${destPath}`);
+    }
+    const destDir = path.dirname(destPath);
+    fs.mkdirSync(destDir, { recursive: true });
+
+    // Checkpoint first so the main DB file reflects all committed writes.
+    try { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
+
+    // VACUUM INTO requires a string literal in SQL; it doesn't support
+    // parameter binding, so we must escape single-quotes in the path.
+    const escaped = destPath.replace(/'/g, "''");
+    this.db.exec(`VACUUM INTO '${escaped}'`);
+
+    return { path: destPath, size: fs.statSync(destPath).size };
   }
 
   getDbPath(): string {

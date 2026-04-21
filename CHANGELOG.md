@@ -7,6 +7,185 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-04-21
+
+### Theme: Closing out the v0.8 stretch items
+
+Cleans up the two outstanding boxes from the v0.8 "Scalable Recall &
+Robustness" milestone that were deferred in the first pass. No API
+surface changes; all work is internal hardening.
+
+### Added
+- **Optional sqlite-vec acceleration (`src/sqlite-vec.ts`)** — when the
+  `sqlite-vec` npm package is installed (not a dependency — opt-in),
+  `SemanticMemoryLayer` now loads it into its `DatabaseSync`, creates a
+  mirrored `vec_items` vec0 virtual table, backfills it from
+  `semantic_memories` on startup, and routes hybrid-mode L3 recall
+  through a native KNN query (`embedding MATCH ?`) instead of the
+  FTS5-prefiltered cosine scan. Gracefully falls back to the existing
+  path when the package is missing or extension loading fails; can be
+  explicitly disabled via `CF_DISABLE_SQLITE_VEC=1`. Exposes a new
+  `vecEnabled` getter plus `recallVec()` / `recallAccelerated()`
+  methods. Engine hybrid mode auto-dispatches via `recallAccelerated()`.
+- **Engine-wide closed-state guard** — the v0.7 `closed` flag only
+  protected the background decay interval. All public async
+  `ContextEngine` methods (`store`, `recall`, `promote`, `demote`,
+  `summarize`, `getMemory`, `updateMemory`, `deleteMemory`,
+  `listMemories`) plus `getCodeIndex()` now invoke a shared
+  `ensureOpen()` helper that rejects with a clear
+  `"ContextEngine is closed; cannot execute <op>"` error after
+  `close()` has been called. Prevents use-after-close SQLite crashes
+  when in-flight async work races with a shutdown signal.
+
+### Removed
+- `ROADMAP.md` — roadmap-to-1.0 is now tracked in the `CHANGELOG.md` entries
+  plus git tags. The separate document had drifted from the actual
+  completion state and duplicated release-note content.
+
+### Tests
+- **678 passing**, 34 files. New suites:
+  `tests/unit/sqlite-vec.test.ts` (detection, opt-out, fallback
+  behaviour) and `tests/unit/engine-closed-guard.test.ts` (every guarded
+  method rejects after close).
+
+## [0.10.0] - 2026-04-21
+
+### Theme: Observability & Developer Experience
+
+Makes the running server inspectable from the outside. Operators can now
+answer "is the memory layer healthy?" and "how fast is recall?" without
+reading source code.
+
+### Added
+- **Structured JSON logger** (`src/logger.ts`) — one JSON object per line
+  to stderr, level-filtered via `CONTEXT_FABRIC_LOG_LEVEL` env var.
+  Shape: `{ ts, level, module, msg, ...fields }`. Reserved keys cannot
+  be shadowed by fields. Defaults to `warn` under `NODE_ENV=test` to
+  keep test output clean, `info` otherwise. `createLogger('module')`
+  returns a scoped logger with a `.child('sub')` helper.
+- **In-process metrics registry** (`src/metrics.ts`) — counters plus
+  reservoir-sampled latency histograms (p50/p95/p99/max). `recall()` is
+  now instrumented with `recall.calls.{mode}` and
+  `recall.latency_ms.{mode}`.
+- **`context.metrics` MCP tool** — returns `{ stats, counters,
+  histograms, reset }` where stats come from `engine.getStats()` (memory
+  counts per layer/type) and counters/histograms come from the registry.
+  Optional `reset: true` clears histograms after snapshot for
+  interval-style collection.
+- **`context.health` MCP tool** — returns
+  `{ status: 'ok' | 'degraded', checks: [...] }` validating L2/L3
+  SQLite connectivity and embedding model presence. Model absence is a
+  `warn` (not `fail`) since the server degrades gracefully without it.
+  Tool count: **15 → 17**.
+
+### Deferred
+- Structured logger retrofit of all existing `console.*` call sites in
+  engine/layers (done as gradual migration, not hard-cut).
+- Embedding cache hit-rate, FTS5 query count, decay-deletions-per-cycle
+  metrics (require wiring from `EmbeddingService`, `fts5.ts`, and decay
+  loop respectively).
+- Disk-space check in `context.health`.
+- CLI wizard (`npx context-fabric init/doctor/migrate`), shell
+  completions, and API reference generation — pushed to the v1.0.0
+  release-prep cycle.
+
+## [0.9.0] - 2026-04-21
+
+### Theme: API Stability & Schema Hardening
+
+Locks down the MCP tool interface for 1.0's stability guarantee. Schemas
+are strict, errors are structured, and the wire format gains batch store
+plus JSONL export/import for backup and migration.
+
+### Added
+- **Strict Zod schemas on all 15 MCP tools** — `.strict()` everywhere so
+  unknown fields are rejected at the schema boundary instead of silently
+  dropped. Catches LLM-hallucinated parameters early. Schemas are now
+  exported from `src/server.ts` for external validation / docs.
+- **Consistent error response schema** — new `src/errors.ts` with
+  `toolError()` / `toolValidationError()` helpers. Every tool failure now
+  returns `{ isError: true, structuredContent: { error: { code, message,
+  details } } }` with stable codes (`validation_error`, `internal_error`,
+  `shutting_down`). Clients can branch on `code` without string parsing.
+- **`context.recall` pagination** — new `offset` parameter (int >= 0,
+  default 0). Response carries `{ offset, limit, hasMore }` for paged UX.
+- **`context.store` batch** — `content` now accepts `string | string[]`.
+  Array form stores each item in sequence and returns `{ count, ids[] }`,
+  removing per-memory MCP round-trip overhead for bulk import.
+- **`context.export` / `context.import`** — JSONL round-trip for L2/L3
+  memories. `context.export` writes one memory per line, optionally
+  filtered by layer. `context.import` parses, skips malformed lines with
+  structured per-line errors, and returns `{ imported, skipped,
+  errors[] }`. Enables backup, migration between projects, and shareable
+  memory bundles. Tool count: **13 → 15**.
+- **Single version source** — new `src/version.ts` reads version from
+  `package.json` at runtime, eliminating the three-way drift risk called
+  out in the v0.7.3.1 review.
+
+### Fixed
+- **Test-side-effect server boot** — `src/server.ts` now gates `main()`
+  behind an `import.meta.url` check so test files that import Zod schema
+  exports no longer start a live stdio MCP server and pollute test
+  output.
+
+### Changed
+- Tool count: **13 → 15** (added `context.export`, `context.import`).
+- Error payloads are now always structured (no more raw error strings in
+  tool responses).
+
+## [0.8.0] - 2026-04-21
+
+### Theme: Scalable Recall & Robustness
+
+This release makes the storage layers production-grade: the critical L3
+recall scalability problem is fixed, databases survive unclean exit, and
+the server can take online snapshots without stopping.
+
+### Added
+- **L3 FTS5 pre-filter (`recallPrefiltered`)** — the critical scalability
+  fix. `recall()` previously loaded every semantic row, JSON-parsed every
+  embedding, and ran cosine over the full set (O(N), unusable past ~10K
+  memories). `recallPrefiltered(query, limit, poolSize=200)` uses the
+  existing FTS5 index to fetch just the top-poolSize keyword matches,
+  then runs cosine over that pool. Hybrid mode (the default recall path)
+  now uses it. Pure `semantic` mode still uses full-scan for exact
+  recall. **Benchmark: p50 latency at 10K drops from 281 ms to 8 ms (35×).**
+- **`context.backup` MCP tool** — online VACUUM INTO snapshots of L2 and
+  L3 to a destination directory. Tool count: **12 → 13**. WAL-checkpointed,
+  refuses to clobber existing files, safe to copy offsite.
+- **WAL checkpoint on close** — all three SQLite-backed layers
+  (`src/layers/project.ts`, `src/layers/semantic.ts`,
+  `src/indexer/code-index.ts`) now run `PRAGMA wal_checkpoint(TRUNCATE)`
+  before `db.close()`, flushing the WAL and zeroing the sidecar.
+- **Startup integrity check** — new `src/db-integrity.ts` runs
+  `PRAGMA quick_check` when L2/L3 open a file-backed database and emits a
+  labelled `console.warn` on corruption. Non-fatal so the user can still
+  export surviving data.
+- **Graceful shutdown** — new `src/shutdown.ts` adds a `ShutdownController`
+  that brackets every MCP `CallToolRequest` handler. SIGTERM/SIGINT now
+  waits up to 5 s for in-flight tool calls to finish before closing
+  engines; new tool calls are rejected during drain.
+- **Transaction wrapping** — L2 `store()` (memory row + tag rows) and
+  `summarize()` (summary row + delete originals) are now wrapped in
+  explicit `BEGIN`/`COMMIT`/`ROLLBACK` blocks. Previously each statement
+  committed independently, so a mid-operation failure could leave the
+  layer in a partial state.
+- **Recall benchmark suite** — `benchmarks/recall-latency.ts` seeds 1 K
+  and 10 K synthetic memories and measures p50/p95 for `recall()` vs
+  `recallPrefiltered()`. Runs via `npm run bench:recall` against `dist/`.
+  Skips cleanly when the bge-small-en model is not cached.
+
+### Tests
+- **612 passing** (up from 588), 24 test files. New suites:
+  `tests/unit/shutdown-safety.test.ts`, `tests/unit/db-integrity.test.ts`,
+  `tests/unit/shutdown.test.ts`, `tests/unit/l3-prefilter.test.ts`,
+  `tests/unit/backup.test.ts`, `tests/unit/transactions.test.ts`.
+
+### Migration
+- No breaking changes. All new MCP tools and APIs are additive.
+- The new `context.backup` tool requires clients to be aware of the
+  updated tool list (now 13 tools).
+
 ## [0.7.3] - 2026-03-07
 
 ### Fixed

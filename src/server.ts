@@ -16,6 +16,9 @@ import { z } from "zod";
 import { initialize, getConfig } from "./config.js";
 import { ContextEngine } from "./engine.js";
 import { setupForCLI, previewConfig, type SupportedCLI } from "./setup.js";
+import { ShutdownController } from "./shutdown.js";
+import { toErrorPayload, ToolError } from "./errors.js";
+import { VERSION } from "./version.js";
 import {
   MemoryLayer,
   MemoryType,
@@ -28,7 +31,7 @@ import { TimeService } from "./time.js";
 // Tool Schemas (Zod)
 // ============================================================================
 
-const StoreMemorySchema = z.object({
+export const StoreMemorySchema = z.object({
   type: z.enum(["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"]),
   layer: z.number().int().min(1).max(3).optional(),
   content: z.string().min(1),
@@ -56,11 +59,13 @@ const StoreMemorySchema = z.object({
   pinned: z.boolean().optional()
     .describe('Pin this memory to protect it from decay and summarization. Pinned memories are never automatically deleted.'),
   ttl: z.number().int().positive().optional(),
-});
+}).strict();
 
-const RecallSchema = z.object({
+export const RecallSchema = z.object({
   query: z.string().min(1),
   limit: z.number().int().positive().default(10),
+  offset: z.number().int().min(0).default(0)
+    .describe('Skip the first N results. Combine with limit for pagination. Default 0.'),
   threshold: z.number().min(0).max(1).default(0.7),
   mode: z.enum(["semantic", "keyword", "hybrid"]).default("hybrid")
     .describe("Search mode: 'semantic' (vector cosine), 'keyword' (FTS5 BM25), or 'hybrid' (RRF fusion of both). Default: hybrid."),
@@ -71,9 +76,9 @@ const RecallSchema = z.object({
     projectPath: z.string().optional(),
   }).optional(),
   sessionId: z.string().optional(),
-});
+}).strict();
 
-const GetCurrentContextSchema = z.object({
+export const GetCurrentContextSchema = z.object({
   sessionId: z.string().optional(),
   currentFile: z.string().optional(),
   currentCommand: z.string().optional(),
@@ -82,9 +87,9 @@ const GetCurrentContextSchema = z.object({
     .describe("Filter patterns by language (e.g. 'typescript', 'python')."),
   filePath: z.string().optional()
     .describe("Filter patterns by file path."),
-});
+}).strict();
 
-const SummarizeSchema = z.object({
+export const SummarizeSchema = z.object({
   sessionId: z.string().optional(),
   layer: z.number().int().min(2).max(3).default(2),
   olderThanDays: z.number().int().positive().default(30),
@@ -96,10 +101,10 @@ const SummarizeSchema = z.object({
     includeDecisions: z.boolean().default(true),
   }).optional(),
   projectPath: z.string().optional(),
-});
+}).strict();
 
 
-const ReportEventSchema = z.object({
+export const ReportEventSchema = z.object({
   event: z.object({
     type: z.enum([
       "file_opened",
@@ -117,26 +122,26 @@ const ReportEventSchema = z.object({
     cliType: z.enum(["kimi", "claude", "claude-code", "opencode", "codex", "gemini", "cursor", "generic"]),
     projectPath: z.string().optional(),
   }),
-});
+}).strict();
 
 
-const OrientSchema = z.object({
+export const OrientSchema = z.object({
   timezone: z.string().optional(),
   projectPath: z.string().optional(),
   expression: z.string().optional()
     .describe("Optional date expression to resolve: 'now', 'today', 'yesterday', 'tomorrow', 'start of day', 'end of day', 'start of week', 'end of week', 'start of next week', 'next Monday' … 'next Sunday', 'last Monday' … 'last Sunday', an ISO date string, or an epoch-ms number."),
   also: z.array(z.string()).optional()
     .describe("Additional IANA timezone names to show the same moment in (world clock)."),
-});
+}).strict();
 
-const SetupSchema = z.object({
+export const SetupSchema = z.object({
   cli: z.enum(["opencode", "claude", "claude-code", "kimi", "codex", "gemini", "cursor", "docker", "generic"]),
   serverPath: z.string().optional(),
   useDocker: z.boolean().default(false),
   preview: z.boolean().default(false),
-});
+}).strict();
 
-const SearchCodeSchema = z.object({
+export const SearchCodeSchema = z.object({
   query: z.string().min(1),
   mode: z.enum(["text", "symbol", "semantic"]).default("semantic"),
   language: z.string().optional(),
@@ -146,14 +151,14 @@ const SearchCodeSchema = z.object({
   threshold: z.number().min(0).max(1).default(0.5),
   includeContent: z.boolean().default(true),
   projectPath: z.string().optional(),
-});
+}).strict();
 
-const GetMemorySchema = z.object({
+export const GetMemorySchema = z.object({
   memoryId: z.string().min(1),
   projectPath: z.string().optional(),
-});
+}).strict();
 
-const UpdateMemorySchema = z.object({
+export const UpdateMemorySchema = z.object({
   memoryId: z.string().min(1),
   content: z.string().optional(),
   metadata: z.preprocess(v => typeof v === 'string' ? JSON.parse(v) : v, z.record(z.unknown()).optional()),
@@ -165,7 +170,7 @@ const UpdateMemorySchema = z.object({
   targetLayer: z.number().int().min(2).max(3).optional()
     .describe('Promote memory to this layer (2=project, 3=semantic). Triggers promote logic: copies to new layer and deletes from old. Cannot be combined with content/metadata/tags/weight/pinned.'),
   projectPath: z.string().optional(),
-}).refine(
+}).strict().refine(
   (data) => {
     if (data.targetLayer === undefined) return true;
     return data.content === undefined && data.metadata === undefined
@@ -175,12 +180,12 @@ const UpdateMemorySchema = z.object({
   { message: 'targetLayer (promote) cannot be combined with content/metadata/tags/weight/pinned updates. Use separate calls.' }
 );
 
-const DeleteMemorySchema = z.object({
+export const DeleteMemorySchema = z.object({
   memoryId: z.string().min(1),
   projectPath: z.string().optional(),
-});
+}).strict();
 
-const ListMemoriesSchema = z.object({
+export const ListMemoriesSchema = z.object({
   layer: z.number().int().min(1).max(3).optional(),
   type: z.enum(["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"]).optional(),
   tags: z.array(z.string()).optional(),
@@ -189,7 +194,61 @@ const ListMemoriesSchema = z.object({
   stats: z.preprocess(v => typeof v === 'string' ? v === 'true' : v, z.boolean().optional())
     .describe('If true, return memory store summary (counts per layer, pinned counts, L2 breakdown by type) instead of listing memories.'),
   projectPath: z.string().optional(),
+}).strict();
+
+export const BackupSchema = z.object({
+  destDir: z.string().min(1).describe('Absolute directory path to write backup files into. Created if missing.'),
+  projectPath: z.string().optional(),
+}).strict();
+
+// v0.9: batch store — reduces MCP round-trips for bulk imports.
+// Each item has the same shape as StoreMemorySchema minus the schema wrapper.
+const StoreItemSchema = z.object({
+  type: z.enum(["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"]),
+  layer: z.number().int().min(1).max(3).optional(),
+  content: z.string().min(1),
+  metadata: z.object({
+    title: z.string().optional(),
+    tags: z.array(z.string()).default([]),
+    confidence: z.number().min(0).max(1).default(0.8),
+    source: z.enum(["user_explicit", "ai_inferred", "system_auto"]).default("ai_inferred"),
+    projectPath: z.string().optional(),
+    cliType: z.string().default("generic"),
+    weight: z.number().int().min(1).max(5).default(3),
+  }),
+  pinned: z.boolean().optional(),
+  ttl: z.number().int().positive().optional(),
 });
+
+export const StoreBatchSchema = z.object({
+  items: z.array(StoreItemSchema).min(1).max(500)
+    .describe('Array of memory items to store in one call. Max 500 per batch.'),
+  projectPath: z.string().optional()
+    .describe('Default projectPath used for items that omit their own metadata.projectPath.'),
+}).strict();
+
+export const ExportSchema = z.object({
+  destPath: z.string().min(1)
+    .describe('Absolute path to the .jsonl file to write. Parent dirs are created.'),
+  layers: z.array(z.number().int().min(1).max(3)).optional()
+    .describe('Layers to export. Default: [2, 3]. Pass [1,2,3] to include ephemeral L1.'),
+  projectPath: z.string().optional(),
+}).strict();
+
+export const ImportSchema = z.object({
+  srcPath: z.string().min(1)
+    .describe('Absolute path to a .jsonl file produced by context.export.'),
+  projectPath: z.string().optional(),
+}).strict();
+
+export const MetricsSchema = z.object({
+  projectPath: z.string().optional(),
+  reset: z.boolean().optional().default(false),
+}).strict();
+
+export const HealthSchema = z.object({
+  projectPath: z.string().optional(),
+}).strict();
 
 
 // ============================================================================
@@ -272,6 +331,7 @@ const TOOLS: Tool[] = [
       properties: {
         query: { type: "string", description: "Search query" },
         limit: { type: "number", default: 10 },
+        offset: { type: "number", default: 0, description: "Skip the first N results. Combine with limit for pagination." },
         threshold: { type: "number", default: 0.7, description: "Minimum similarity score (0-1)" },
         mode: {
           type: "string",
@@ -486,6 +546,89 @@ const TOOLS: Tool[] = [
       required: ["cli"],
     },
   },
+  {
+    name: "context.backup",
+    description: "Create a consistent timestamped snapshot of L2 (project) and L3 (semantic) SQLite databases using VACUUM INTO. Writes two files (l2-memory-<ts>.db and l3-semantic-<ts>.db) to destDir. Safe to run while the server is in use.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        destDir: { type: "string", description: "Absolute directory path to write backup files into. Created if missing." },
+        projectPath: { type: "string", description: "Project path whose L2 layer is backed up. Defaults to the current working directory." },
+      },
+      required: ["destDir"],
+    },
+  },
+  {
+    name: "context.storeBatch",
+    description: "Store multiple memories in a single call (up to 500). Functionally equivalent to calling context.store N times but avoids MCP round-trip overhead. Use for bulk imports, session dumps, or context.import transformations.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          maxItems: 500,
+          items: {
+            type: "object",
+            properties: {
+              type: { type: "string", enum: ["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"] },
+              layer: { type: "number", minimum: 1, maximum: 3 },
+              content: { type: "string" },
+              metadata: { type: "object" },
+              pinned: { type: "boolean" },
+              ttl: { type: "number" },
+            },
+            required: ["type", "content", "metadata"],
+          },
+        },
+        projectPath: { type: "string", description: "Default projectPath for items that omit metadata.projectPath." },
+      },
+      required: ["items"],
+    },
+  },
+  {
+    name: "context.export",
+    description: "Export L2 (project) and L3 (semantic) memories to a JSON Lines file. Embeddings are omitted; the importer will recompute them. Useful for backup, migration, and cross-project sharing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        destPath: { type: "string", description: "Absolute path to the .jsonl file to write. Parent dirs are created." },
+        layers: { type: "array", items: { type: "number", minimum: 1, maximum: 3 }, description: "Layers to export. Default [2, 3]." },
+        projectPath: { type: "string" },
+      },
+      required: ["destPath"],
+    },
+  },
+  {
+    name: "context.import",
+    description: "Import memories from a JSON Lines file produced by context.export. Each valid line is re-stored via the normal store path (L3 entries are re-embedded).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        srcPath: { type: "string", description: "Absolute path to a .jsonl file." },
+        projectPath: { type: "string" },
+      },
+      required: ["srcPath"],
+    },
+  },
+  {
+    name: "context.metrics",
+    description: "Return in-process observability metrics: counters and latency histograms (p50/p95/p99) for recall calls by mode, plus memory counts per layer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectPath: { type: "string" },
+        reset: { type: "boolean", description: "If true, reset histograms/counters after snapshot. Default false." },
+      },
+    },
+  },
+  {
+    name: "context.health",
+    description: "Health check: validates L2/L3 SQLite connectivity and embedding model presence. Returns {status: 'ok' | 'degraded', checks: [...]}.",
+    inputSchema: {
+      type: "object",
+      properties: { projectPath: { type: "string" } },
+    },
+  },
 ];
 
 // ============================================================================
@@ -496,6 +639,10 @@ const TOOLS: Tool[] = [
 const MAX_ENGINES = 32;
 const engines = new Map<string, ContextEngine>();
 let defaultEngine: ContextEngine | null = null;
+
+// v0.8: Shutdown coordinator — tracks in-flight tool calls so SIGTERM/SIGINT
+// can wait for them to finish before engines are closed. Exported for tests.
+export const shutdown = new ShutdownController();
 
 /**
  * Get or create a ContextEngine for a project.
@@ -588,7 +735,7 @@ async function handleRecall(args: unknown): Promise<unknown> {
   const layers = params.filter?.layers?.map((l: number) => l as MemoryLayer);
   
   const results = await engine.recall(params.query, {
-    limit: params.limit,
+    limit: params.limit + params.offset,
     mode: params.mode as import('./types.js').RecallMode,
     layers,
     filter: {
@@ -598,11 +745,12 @@ async function handleRecall(args: unknown): Promise<unknown> {
     },
   });
   
-  // Filter by threshold
+  // Filter by threshold, then apply offset/limit pagination.
   const filtered = results.filter(r => r.similarity >= params.threshold);
+  const paged = filtered.slice(params.offset, params.offset + params.limit);
   
   return {
-    results: filtered.map(r => ({
+    results: paged.map(r => ({
       memory: {
         id: r.id,
         type: r.type,
@@ -616,6 +764,9 @@ async function handleRecall(args: unknown): Promise<unknown> {
       layer: r.layer,
     })),
     total: filtered.length,
+    offset: params.offset,
+    limit: params.limit,
+    hasMore: filtered.length > params.offset + params.limit,
   };
 }
 
@@ -891,6 +1042,86 @@ async function handleSetup(args: unknown): Promise<unknown> {
   return result;
 }
 
+async function handleBackup(args: unknown): Promise<unknown> {
+  const params = BackupSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  const backups = engine.backup(params.destDir);
+  return {
+    destDir: params.destDir,
+    files: backups,
+    totalBytes: backups.reduce((s, b) => s + b.size, 0),
+  };
+}
+
+async function handleStoreBatch(args: unknown): Promise<unknown> {
+  const params = StoreBatchSchema.parse(args);
+  const results: Array<{ id: string; layer: MemoryLayer; pinned: boolean }> = [];
+  const errors: Array<{ index: number; error: string }> = [];
+
+  for (let i = 0; i < params.items.length; i++) {
+    const item = params.items[i]!;
+    const projectPath = item.metadata.projectPath ?? params.projectPath;
+    const engine = getEngine(projectPath);
+    try {
+      const memory = await engine.store(item.content, item.type, {
+        layer: item.layer,
+        metadata: item.metadata,
+        tags: item.metadata.tags,
+        ttl: item.ttl,
+        pinned: item.pinned,
+      });
+      results.push({
+        id: memory.id,
+        layer: memory.layer ?? MemoryLayer.L2_PROJECT,
+        pinned: memory.pinned ?? false,
+      });
+    } catch (err) {
+      errors.push({ index: i, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  return {
+    stored: results.length,
+    failed: errors.length,
+    results,
+    ...(errors.length > 0 ? { errors } : {}),
+  };
+}
+
+async function handleExport(args: unknown): Promise<unknown> {
+  const params = ExportSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  const layers = params.layers?.map(l => l as MemoryLayer);
+  return engine.exportMemories(params.destPath, layers ? { layers } : {});
+}
+
+async function handleImport(args: unknown): Promise<unknown> {
+  const params = ImportSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  return engine.importMemories(params.srcPath);
+}
+
+async function handleMetrics(args: unknown): Promise<unknown> {
+  const params = MetricsSchema.parse(args);
+  const { metrics } = await import('./metrics.js');
+  const engine = getEngine(params.projectPath);
+  const stats = await engine.getStats();
+  const snap = metrics.snapshot();
+  if (params.reset) metrics.reset();
+  return {
+    stats,
+    counters: snap.counters,
+    histograms: snap.histograms,
+    reset: params.reset ?? false,
+  };
+}
+
+async function handleHealth(args: unknown): Promise<unknown> {
+  const params = HealthSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  return engine.health();
+}
+
 
 // ============================================================================
 // Server Setup
@@ -900,7 +1131,7 @@ async function createServer(): Promise<Server> {
   const server = new Server(
     {
       name: "context-fabric",
-      version: "0.7.3.1",
+      version: VERSION,
     },
     {
       capabilities: {
@@ -917,6 +1148,20 @@ async function createServer(): Promise<Server> {
   // Handle tool calls
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params as { name: string; arguments?: unknown };
+
+    // v0.8: Reject new calls while shutting down; otherwise bracket the
+    // handler with begin/end so drain() knows when we're idle.
+    try {
+      shutdown.begin();
+    } catch (err) {
+      const payload = toErrorPayload(
+        err instanceof Error ? new ToolError('SHUTTING_DOWN', err.message) : err,
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(payload) }],
+        isError: true,
+      };
+    }
 
     try {
       let result: unknown;
@@ -958,8 +1203,26 @@ async function createServer(): Promise<Server> {
         case "context.setup":
           result = await handleSetup(args);
           break;
+        case "context.backup":
+          result = await handleBackup(args);
+          break;
+        case "context.storeBatch":
+          result = await handleStoreBatch(args);
+          break;
+        case "context.export":
+          result = await handleExport(args);
+          break;
+        case "context.import":
+          result = await handleImport(args);
+          break;
+        case "context.metrics":
+          result = await handleMetrics(args);
+          break;
+        case "context.health":
+          result = await handleHealth(args);
+          break;
         default:
-          throw new Error(`Unknown tool: ${name}`);
+          throw new ToolError('UNKNOWN_TOOL', `Unknown tool: ${name}`);
       }
 
       return {
@@ -971,18 +1234,20 @@ async function createServer(): Promise<Server> {
         ],
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[ContextFabric] Error handling ${name}:`, message);
-      
+      const payload = toErrorPayload(error);
+      console.error(`[ContextFabric] Error handling ${name}:`, payload.code, payload.error);
+
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify({ error: message }),
+            text: JSON.stringify(payload),
           },
         ],
         isError: true,
       };
+    } finally {
+      shutdown.end();
     }
   });
 
@@ -1008,28 +1273,42 @@ async function main(): Promise<void> {
   
   console.error("Context Fabric MCP Server running on stdio");
   
-  // Cleanup on exit
-  process.on('SIGINT', () => {
-    console.error("\nShutting down Context Fabric...");
+  // v0.8: Graceful shutdown — wait up to 5s for in-flight tool calls to
+  // finish, then close engines cleanly (which also checkpoints WAL).
+  const gracefulShutdown = async (signal: string) => {
+    console.error(`\n[context-fabric] ${signal} received; draining in-flight calls...`);
+    const result = await shutdown.drain(5000);
+    if (!result.drained) {
+      console.error(`[context-fabric] drain timed out with ${result.remaining} call(s) still running; closing anyway.`);
+    } else {
+      console.error('[context-fabric] drain complete.');
+    }
     for (const [path, engine] of engines) {
-      console.error(`Closing engine for ${path}...`);
+      console.error(`[context-fabric] Closing engine for ${path}...`);
       engine.close();
     }
     process.exit(0);
-  });
-  
-  process.on('SIGTERM', () => {
-    console.error("\nShutting down Context Fabric...");
-    for (const [path, engine] of engines) {
-      console.error(`Closing engine for ${path}...`);
-      engine.close();
-    }
-    process.exit(0);
-  });
+  };
+
+  process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
+  process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
 }
 
-// Run the server
-main().catch((error) => {
-  console.error("Fatal error:", error);
-  process.exit(1);
-});
+// Run the server only when invoked as the entry point (not during test imports).
+// v0.9: guard with import.meta.url check so schema exports can be imported
+// by unit tests without booting the stdio transport.
+import { fileURLToPath } from 'node:url';
+const isEntryPoint = (() => {
+  try {
+    return process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+  } catch {
+    return false;
+  }
+})();
+
+if (isEntryPoint) {
+  main().catch((error) => {
+    console.error("Fatal error:", error);
+    process.exit(1);
+  });
+}

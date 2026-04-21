@@ -1,6 +1,6 @@
 {
   "name": "context-fabric",
-  "version": "0.7.3.1",
+  "version": "0.10.1",
   "description": "Persistent memory for AI coding agents. MCP server with semantic search, three-layer storage, and time-aware orientation.",
   "type": "module",
   "main": "dist/index.js",
@@ -21,7 +21,8 @@
     "test:watch": "vitest",
     "test:watch:unit": "vitest tests/unit",
     "test:watch:integration": "vitest tests/integration",
-    "test:watch:e2e": "vitest tests/e2e"
+    "test:watch:e2e": "vitest tests/e2e",
+    "bench": "tsc && node --experimental-strip-types benchmarks/recall-latency.ts"
   },
   "repository": {
     "type": "git",

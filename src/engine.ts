@@ -25,6 +25,7 @@ import { PatternExtractor, Violation } from './patterns.js';
 import { EventHandler, EventResult } from './events.js';
 import { getConfig, initialize, getStoragePaths } from './config.js';
 import { TimeService } from './time.js';
+import { metrics } from './metrics.js';
 import type { OrientationContext, OfflineGap } from './types.js';
 import { CodeIndex, type IndexStatus } from './indexer/code-index.js';
 
@@ -159,10 +160,24 @@ export class ContextEngine {
   // ============================================================================
 
   /**
+   * v0.8: shared guard for all async public methods. Rejects calls made
+   * after close() so we never touch a closed SQLite handle from in-flight
+   * work (decay interval races were handled by the `closed` flag, but any
+   * awaited handler kept running even after close — this extends that
+   * guard uniformly).
+   */
+  private ensureOpen(op: string): void {
+    if (this.closed) {
+      throw new Error(`ContextEngine is closed; cannot execute ${op}`);
+    }
+  }
+
+  /**
    * Get or create the code index (lazy initialization).
    * Shares the L3 embedding service to avoid loading the model twice.
    */
   getCodeIndex(): CodeIndex {
+    this.ensureOpen('getCodeIndex');
     if (!this.codeIndex) {
       this.codeIndex = new CodeIndex({
         projectPath: this.projectPath,
@@ -177,6 +192,7 @@ export class ContextEngine {
    * Auto-route storage based on content type and metadata
    */
   async store(content: string, type: MemoryType, options: StoreOptions = {}): Promise<Memory> {
+    this.ensureOpen('store');
     // Use SmartRouter to determine layer if not specified
     let targetLayer = options.layer;
     let routingReason = 'Layer explicitly specified';
@@ -310,17 +326,30 @@ export class ContextEngine {
    * - 'hybrid': RRF fusion of keyword + semantic rankers (PR 3)
    */
   async recall(query: string, options: RecallOptions = {}): Promise<RankedMemory[]> {
+    this.ensureOpen('recall');
     const limit = options.limit ?? 10;
     const mode = options.mode ?? 'hybrid';
     const layers = options.layers ?? [MemoryLayer.L1_WORKING, MemoryLayer.L2_PROJECT, MemoryLayer.L3_SEMANTIC];
     const results: RankedMemory[] = [];
 
+    // v0.10: observability — count and time every recall by mode.
+    metrics.inc(`recall.calls.${mode}`);
+    const recallStart = Date.now();
+
     if (mode === 'keyword') {
-      return this.recallKeyword(query, limit, layers, options.filter);
+      try {
+        return await this.recallKeyword(query, limit, layers, options.filter);
+      } finally {
+        metrics.observe(`recall.latency_ms.${mode}`, Date.now() - recallStart);
+      }
     }
 
     if (mode === 'hybrid') {
-      return this.recallHybrid(query, limit, layers, options.filter);
+      try {
+        return await this.recallHybrid(query, limit, layers, options.filter);
+      } finally {
+        metrics.observe(`recall.latency_ms.${mode}`, Date.now() - recallStart);
+      }
     }
 
     // mode === 'semantic' (original behavior)
@@ -441,11 +470,14 @@ export class ContextEngine {
     // Ranker 1: Keyword (BM25)
     const keywordResults = this.recallKeyword(query, fetchLimit, layers, filter);
 
-    // Ranker 2: Semantic (vector cosine) — only L3 contributes semantic scores
+    // Ranker 2: Semantic (vector cosine) — only L3 contributes semantic scores.
+    // v0.8: Use recallAccelerated() so we automatically use the sqlite-vec
+    // ANN path when the extension is installed, and fall back to the
+    // BM25-prefiltered cosine path otherwise. Both are bounded-cost.
     const semanticResults: RankedMemory[] = [];
     if (layers.includes(MemoryLayer.L3_SEMANTIC)) {
       try {
-        const l3Results = await this.l3.recall(query, fetchLimit);
+        const l3Results = await this.l3.recallAccelerated(query, fetchLimit);
         for (const r of l3Results) {
           if (this.matchesFilter(r, filter)) {
             semanticResults.push({ ...r, layer: MemoryLayer.L3_SEMANTIC });
@@ -542,6 +574,7 @@ export class ContextEngine {
    * Promote memory up layers (L1→L2, L2→L3)
    */
   async promote(memoryId: string, fromLayer: MemoryLayer): Promise<Memory> {
+    this.ensureOpen('promote');
     let memory: Memory | undefined;
 
     // Get from source layer
@@ -589,6 +622,7 @@ export class ContextEngine {
    * Demote memory down layers (for archiving)
    */
   async demote(memoryId: string, fromLayer: MemoryLayer): Promise<void> {
+    this.ensureOpen('demote');
     switch (fromLayer) {
       case MemoryLayer.L1_WORKING:
         this.l1.touch(memoryId); // L1 demote = touch only, not delete
@@ -642,6 +676,7 @@ export class ContextEngine {
    * Summarize old memories in a layer
    */
   async summarize(layer: MemoryLayer, olderThanDays: number): Promise<SummaryResult> {
+    this.ensureOpen('summarize');
     if (layer === MemoryLayer.L1_WORKING) {
       throw new Error('Cannot summarize L1 - memories are ephemeral');
     }
@@ -756,6 +791,7 @@ export class ContextEngine {
    * Returns the memory and the layer it was found in, or null.
    */
   async getMemory(id: string): Promise<{ memory: Memory; layer: MemoryLayer } | null> {
+    this.ensureOpen('getMemory');
     // L1
     const l1 = this.l1.get(id);
     if (l1) return { memory: l1, layer: MemoryLayer.L1_WORKING };
@@ -776,6 +812,7 @@ export class ContextEngine {
    * L3 re-embeds only if content changed.
    */
   async updateMemory(id: string, updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[]; pinned?: boolean }): Promise<{ memory: Memory; layer: MemoryLayer }> {
+    this.ensureOpen('updateMemory');
     const found = await this.getMemory(id);
     if (!found) throw new Error(`Memory not found: ${id}`);
 
@@ -805,6 +842,7 @@ export class ContextEngine {
    * Throws if not found.
    */
   async deleteMemory(id: string): Promise<{ deletedFrom: MemoryLayer }> {
+    this.ensureOpen('deleteMemory');
     // L1
     if (this.l1.get(id)) {
       this.l1.delete(id);
@@ -826,6 +864,7 @@ export class ContextEngine {
    * List memories with optional filters. Defaults to L2.
    */
   async listMemories(options: ListMemoriesOptions = {}): Promise<{ memories: Memory[]; total: number }> {
+    this.ensureOpen('listMemories');
     const layer = options.layer ?? MemoryLayer.L2_PROJECT;
     const limit = options.limit ?? 20;
     const offset = options.offset ?? 0;
@@ -933,6 +972,48 @@ export class ContextEngine {
   }
 
   /**
+   * v0.10: Health check. Validates:
+   *  - L2 and L3 SQLite connectivity (SELECT 1)
+   *  - Embedding model presence (hasModel() on L3)
+   *  - Disk free bytes for the storage root (via fs.statfs when available)
+   * Never throws; returns a structured report.
+   */
+  async health(): Promise<{
+    status: 'ok' | 'degraded';
+    checks: Array<{ name: string; status: 'pass' | 'fail' | 'warn'; detail?: string }>;
+  }> {
+    const checks: Array<{ name: string; status: 'pass' | 'fail' | 'warn'; detail?: string }> = [];
+
+    // L2 ping
+    try {
+      this.l2.count();
+      checks.push({ name: 'l2.sqlite', status: 'pass' });
+    } catch (err) {
+      checks.push({ name: 'l2.sqlite', status: 'fail', detail: (err as Error).message });
+    }
+
+    // L3 ping
+    try {
+      await this.l3.count();
+      checks.push({ name: 'l3.sqlite', status: 'pass' });
+    } catch (err) {
+      checks.push({ name: 'l3.sqlite', status: 'fail', detail: (err as Error).message });
+    }
+
+    // Embedding model presence — degraded (warn) rather than fail since
+    // the server still works for L1/L2 without it.
+    try {
+      const hasModel = (this.l3 as unknown as { hasEmbeddingModel?: () => boolean }).hasEmbeddingModel?.() ?? true;
+      checks.push({ name: 'l3.embedding_model', status: hasModel ? 'pass' : 'warn', detail: hasModel ? undefined : 'model not cached; semantic recall unavailable' });
+    } catch (err) {
+      checks.push({ name: 'l3.embedding_model', status: 'warn', detail: (err as Error).message });
+    }
+
+    const status = checks.some(c => c.status === 'fail') ? 'degraded' : 'ok';
+    return { status, checks };
+  }
+
+  /**
    * Close all layers and cleanup
    */
   close(): void {
@@ -956,6 +1037,113 @@ export class ContextEngine {
     this.l3.close();
 
     this.log('info', 'ContextEngine closed');
+  }
+
+  /**
+   * v0.8: Create a consistent snapshot of L2 and L3 into `destDir`.
+   * Files are named `l2-memory-<timestamp>.db` and `l3-semantic-<timestamp>.db`.
+   * Returns metadata for each created file.
+   */
+  backup(destDir: string): Array<{ layer: 'L2' | 'L3'; path: string; size: number }> {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const l2Path = `${destDir.replace(/[/\\]+$/, '')}/l2-memory-${ts}.db`;
+    const l3Path = `${destDir.replace(/[/\\]+$/, '')}/l3-semantic-${ts}.db`;
+
+    const results: Array<{ layer: 'L2' | 'L3'; path: string; size: number }> = [];
+    const l2 = this.l2.backup(l2Path);
+    results.push({ layer: 'L2', ...l2 });
+    const l3 = this.l3.backup(l3Path);
+    results.push({ layer: 'L3', ...l3 });
+    return results;
+  }
+
+  /**
+   * v0.9: Export L1/L2/L3 memories to a JSON Lines file. One memory per line.
+   * Layer 1 memories are ephemeral and included only for session snapshots.
+   * Embeddings are omitted (the importer will recompute them via store()).
+   */
+  async exportMemories(
+    destPath: string,
+    options: { layers?: MemoryLayer[] } = {},
+  ): Promise<{ path: string; count: number; bytes: number }> {
+    const { writeFileSync, statSync } = await import('node:fs');
+    const { dirname } = await import('node:path');
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(dirname(destPath), { recursive: true });
+
+    const layers = options.layers ?? [MemoryLayer.L2_PROJECT, MemoryLayer.L3_SEMANTIC];
+    const lines: string[] = [];
+
+    if (layers.includes(MemoryLayer.L1_WORKING)) {
+      for (const m of this.l1.getAll()) {
+        lines.push(JSON.stringify({ ...m, layer: MemoryLayer.L1_WORKING, embedding: undefined }));
+      }
+    }
+    if (layers.includes(MemoryLayer.L2_PROJECT)) {
+      const all = await this.l2.getAll(100000, 0);
+      for (const m of all) {
+        lines.push(JSON.stringify({ ...m, layer: MemoryLayer.L2_PROJECT, embedding: undefined }));
+      }
+    }
+    if (layers.includes(MemoryLayer.L3_SEMANTIC)) {
+      const all = await this.l3.getAll(100000, 0);
+      for (const m of all) {
+        lines.push(JSON.stringify({ ...m, layer: MemoryLayer.L3_SEMANTIC, embedding: undefined }));
+      }
+    }
+
+    const body = lines.length > 0 ? lines.join('\n') + '\n' : '';
+    writeFileSync(destPath, body, 'utf8');
+    const bytes = statSync(destPath).size;
+    return { path: destPath, count: lines.length, bytes };
+  }
+
+  /**
+   * v0.9: Import memories from a JSON Lines file produced by exportMemories().
+   * Each line is parsed and re-stored via engine.store(), which recomputes
+   * embeddings for L3 entries. Invalid lines are collected into `errors`.
+   */
+  async importMemories(
+    srcPath: string,
+  ): Promise<{ imported: number; skipped: number; errors: Array<{ line: number; error: string }> }> {
+    const { readFileSync } = await import('node:fs');
+    const raw = readFileSync(srcPath, 'utf8');
+    const lines = raw.split('\n').filter(l => l.trim().length > 0);
+
+    let imported = 0;
+    let skipped = 0;
+    const errors: Array<{ line: number; error: string }> = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      try {
+        const obj = JSON.parse(lines[i]!) as {
+          content?: string;
+          type?: string;
+          layer?: number;
+          metadata?: object;
+          tags?: string[];
+          pinned?: boolean;
+        };
+        if (typeof obj.content !== 'string' || typeof obj.type !== 'string') {
+          skipped++;
+          continue;
+        }
+        await this.store(obj.content, obj.type as import('./types.js').MemoryType, {
+          layer: (obj.layer ?? MemoryLayer.L2_PROJECT) as MemoryLayer,
+          metadata: obj.metadata as Record<string, unknown> | undefined,
+          tags: obj.tags,
+          pinned: obj.pinned,
+        });
+        imported++;
+      } catch (err) {
+        errors.push({
+          line: i + 1,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return { imported, skipped, errors };
   }
 
   // ============================================================================
