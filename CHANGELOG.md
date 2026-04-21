@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-04-21
+
+### Theme: Performance audit (no feature changes)
+
+Systematic function-by-function optimization pass after user-reported
+sluggish `npm test` / `npm run build`. No schema migrations, no API
+changes, no feature removals — pure hot-path hygiene.
+
+Headline numbers on the 697-test suite, warm run:
+
+| Metric | Before | After | Delta |
+|---|---|---|---|
+| Wall-clock `npm test` | 97.9s | 80.9s | **-17%** |
+| Cumulative test time | 465.9s | 413.1s | **-11%** |
+| Vitest import phase | 20.2s | 9.5s | **-53%** |
+| Incremental `tsc` | 1.7s | 0.8s | **-55%** |
+
+### Changed
+
+- **`src/embedding.ts` — process-wide ONNX model cache.** The
+  `FlagEmbedding.init()` call is the single heaviest cost in the
+  server (~300ms). Previously every `SemanticMemoryLayer` instance
+  created its own `EmbeddingService`, which loaded the model from
+  scratch. Now a module-level `modelCache: Map<string, Promise<FlagEmbedding>>`
+  keyed by `${modelName}|${cacheDir}` shares the loaded handle across
+  all instances. Per-instance text→vector caches are preserved so
+  isolation semantics don't change.
+- **`src/embedding.ts` — true LRU on the text cache.** Both `embed()`
+  and `embedBatch()` now re-insert cached entries on hit, so repeated
+  lookups of hot keys don't let them drift toward eviction.
+- **`src/indexer/scanner.ts` — git pre-check.** `discoverFiles()` now
+  checks `.git` existence before spawning `git ls-files`. In tmp test
+  dirs and non-git projects, this avoids the `child_process.execSync`
+  fork + `fatal: not a git repository` stderr noise entirely — the
+  readdir fallback runs directly.
+- **`src/indexer/code-index.ts` — transactional `reindexFile`.**
+  Delete + file row + symbol rows + chunk rows are now wrapped in a
+  single `BEGIN/COMMIT`. Previously each insert autocommitted, costing
+  one WAL fsync per row (for a 50-symbol file, 50+ fsyncs vs 1).
+- **`src/indexer/code-index.ts` — forward precomputed file info.**
+  `reindexFile()` accepts an optional `{ hash, mtimeMs, sizeBytes }`
+  hint. `incrementalUpdate()` passes the values already computed by
+  `computeDiff()`, eliminating a redundant `statSync` and a full-file
+  SHA-256 per changed file.
+- **`src/layers/semantic.ts` — `backfillVecIndex` short-circuit.**
+  When `vec_items.count === semantic_memories.count`, skip the full
+  backfill. Existing DBs no longer pay the read + JSON.parse + upsert
+  cost on every L3 construction.
+- **`src/layers/semantic.ts` — `delete()` one SELECT.** Collapsed
+  two overlapping `SELECT rowid` queries into one.
+- **`src/layers/semantic.ts` — cached tag statements.** `findByTags`
+  and `countByTags` cache their prepared statements by tag arity
+  (`Map<number, StatementSync>`) instead of re-preparing the dynamic
+  OR-chain on every call.
+- **`src/layers/semantic.ts` — transactional `applyDecay`.** Fetches
+  only the six columns it needs (not `SELECT *`) and wraps the N
+  per-row update/delete statements in a single `BEGIN/COMMIT`, so
+  decay over N memories costs one WAL fsync instead of N.
+- **`tsconfig.json`** — `incremental: true` + `tsBuildInfoFile`.
+- **`vitest.config.ts`** — `singleFork: false`, `isolate: false`.
+  Workers reuse their module graph and ONNX model handle across
+  files. Per-test tmp dirs + explicit `close()` already provide
+  filesystem/DB isolation, so module-level sharing is safe.
+
+### Notes
+
+- No public API changes. No DB schema changes. No tool-schema changes.
+- All 697 pre-existing tests continue to pass unchanged.
+- Production impact: the ONNX model cache is the dominant win in
+  long-running servers too — previously every distinct L3 layer
+  instantiated its own model, which only mattered in tests but also
+  wasted ~50MB per duplicate instance.
+
 ## [0.11.0] - 2026-04-21
 
 ### Theme: Memory Intelligence
