@@ -258,10 +258,13 @@ export async function createTestContext(options: {
     engine,
     sessionId,
     cleanup: async () => {
-      // Wait for any pending operations
-      await sleep(100);
+      // v0.11.2: these used to be sleep(100) each, purely defensive. Since
+      // L3 is ephemeral (in-memory) and engine.close() is synchronous +
+      // drains in-flight work, a single event-loop tick is enough to let
+      // any queued microtasks settle before we blow away the tmp dir.
+      await new Promise<void>(r => setImmediate(r));
       engine.close();
-      await sleep(100);
+      await new Promise<void>(r => setImmediate(r));
       await cleanupTestEnvironment(tempDirs);
     },
   };

@@ -3,7 +3,7 @@
  */
 
 import { execSync } from 'child_process';
-import { statSync, readdirSync, readFileSync, existsSync } from 'fs';
+import { openSync, readSync, closeSync, statSync, readdirSync, readFileSync, existsSync } from 'fs';
 import { join, extname, relative } from 'path';
 import { createHash } from 'crypto';
 
@@ -243,15 +243,22 @@ export function computeDiff(
 // ============================================================================
 
 /**
- * Simple binary detection: read first 8KB and check for null bytes.
+ * Simple binary detection: read the first 8KB and check for null bytes.
+ * v0.11.2: open()+read() the 8KB probe instead of reading the entire file.
+ * For large binary/text files this used to allocate and read the whole
+ * file before inspecting its first 8KB.
  */
 export function isBinary(filePath: string): boolean {
+  let fd: number | undefined;
   try {
-    const fd = readFileSync(filePath, { flag: 'r' });
-    const sample = fd.subarray(0, 8192);
-    return sample.includes(0);
+    fd = openSync(filePath, 'r');
+    const buf = Buffer.alloc(8192);
+    const bytesRead = readSync(fd, buf, 0, 8192, 0);
+    return buf.subarray(0, bytesRead).includes(0);
   } catch {
     return true; // can't read → treat as binary
+  } finally {
+    if (fd !== undefined) { try { closeSync(fd); } catch { /* ignore */ } }
   }
 }
 

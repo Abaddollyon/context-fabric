@@ -4,7 +4,8 @@
 
 **Persistent memory for AI coding agents.** Your agent remembers everything -- across sessions, projects, and tools.
 
-[![Version](https://img.shields.io/badge/version-0.7.2-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
+[![Version](https://img.shields.io/badge/version-0.11.2-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
+[![Tests](https://img.shields.io/badge/tests-697%20passing-brightgreen?style=flat-square)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Node](https://img.shields.io/badge/node-22.5%2B-brightgreen?style=flat-square)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](Dockerfile)
@@ -27,17 +28,29 @@ Context Fabric is an [MCP](https://modelcontextprotocol.io/) server that gives y
 
 ## Features
 
+### Memory & retrieval
 - **Three-layer memory** -- Working (L1), Project (L2), Semantic (L3). Memories auto-route to the right layer.
-- **Local code indexing** -- Scans source files, extracts symbols (functions/classes/types), and stays up-to-date via file watching. Search by text, symbol name, or semantic similarity.
-- **Semantic recall** -- Search by meaning using in-process vector embeddings. No API keys needed.
+- **Hybrid search** -- FTS5 BM25 + vector cosine + Reciprocal Rank Fusion. FTS5 prefilter keeps recall at **<10ms p50 even at 10K memories**.
+- **Semantic recall** -- In-process vector embeddings (ONNX, fastembed). No API keys needed.
+- **Optional ANN acceleration** -- drop-in [sqlite-vec](https://github.com/asg017/sqlite-vec) support; falls back to the BM25 prefilter cleanly.
+- **Local code indexing** -- Scans source files, extracts symbols, stays fresh via file watching. FTS5-prefiltered semantic search across chunks too (v0.11.2).
 - **Time-aware orientation** -- "What happened while I was away?" Offline gap detection, timezone support, session continuity.
-- **Ghost messages** -- Relevant memories surface silently via `context.getCurrent` without cluttering the conversation.
 - **Pattern detection** -- Auto-captures and reuses code patterns across projects.
-- **Self-installing** -- Ask your AI to run `context.setup` and it configures itself into any supported CLI.
-- **Docker-first** -- Cross-platform `docker run --rm -i`. No Node.js required on the host.
-- **Hybrid search** -- FTS5 BM25 + vector cosine + Reciprocal Rank Fusion. Keyword, semantic, or both.
-- **12 MCP tools** -- Store, recall, orient, getCurrent, summarize, searchCode, CRUD (get/update/delete/list), reportEvent, setup.
-- **Zero external dependencies** -- All storage is SQLite. All search is local. Nothing leaves your machine.
+- **Ghost messages** -- Relevant memories surface silently via `context.getCurrent` without cluttering the conversation.
+
+### Memory intelligence (v0.11)
+- **Provenance** -- structured citation block on every memory (`sessionId`, `eventId`, `filePath`, `commitSha`, `sourceUrl`, …). Auto-stamped `capturedAt`.
+- **Dedup-on-store** -- cosine near-duplicate detection at L3 with `skip` / `merge` / `allow` strategies. Stops duplicate facts from accumulating.
+- **Bi-temporal memory** -- explicit `supersedes` linkage + `validFrom` / `validUntil` columns. Query as-of a past point in time with `recall({ asOf })`. Zep-style temporal reasoning, fully local.
+
+### Operations & DX
+- **18 MCP tools** -- store, storeBatch, recall, orient, getCurrent, summarize, searchCode, CRUD (get/update/delete/list), reportEvent, setup, backup, export, import, metrics, health.
+- **Graceful shutdown** -- SIGTERM/SIGINT drain in-flight calls, checkpoint WAL, close cleanly.
+- **Data integrity** -- startup `PRAGMA quick_check`, explicit transactions on every multi-row write, `VACUUM INTO`-based online backups.
+- **Observability** -- structured logger + `context.metrics` + `context.health` tools.
+- **Self-installing** -- ask your AI to run `context.setup` and it configures itself into any supported CLI.
+- **Docker-first** -- cross-platform `docker run --rm -i`. No Node.js required on the host.
+- **Zero external dependencies** -- all storage is SQLite (`node:sqlite`). All search local. Nothing leaves your machine.
 
 ## Supported CLIs
 
@@ -119,6 +132,20 @@ Store a decision. The AI remembers it next session, next week, across tools:
 
 No configuration. No prompting. Memories route to the right layer automatically.
 
+## Performance
+
+Numbers on a commodity dev laptop (warm run, 2026-04-21):
+
+| Workload | Result |
+|---|---|
+| L3 `recall()` @ 10K memories (FTS5 prefilter) | **~8ms p50**, <100ms p99 |
+| L3 `recallVec()` @ 10K (sqlite-vec, opt-in) | sub-ms p50 |
+| Full test suite (697 tests, 37 files) | **68s wall** / 9s import |
+| Incremental `tsc` rebuild | **~0.8s** |
+| Server cold start (with L3 warm) | < 1s |
+
+Benchmark script: [`benchmarks/recall-latency.ts`](benchmarks/recall-latency.ts) — `npm run bench:recall`.
+
 ## How It Works
 
 ```
@@ -140,7 +167,7 @@ Memories auto-route to the right layer. Scratchpad notes go to L1 (ephemeral). D
 |----------|-------------|
 | [Getting Started](docs/getting-started.md) | Installation, first run, Docker and local setup |
 | [CLI Setup](docs/cli-setup.md) | Per-CLI configuration (all 7 supported CLIs) |
-| [Tools Reference](docs/tools-reference.md) | All 12 MCP tools with full parameter docs |
+| [Tools Reference](docs/tools-reference.md) | All 18 MCP tools with full parameter docs |
 | [Memory Types](docs/memory-types.md) | Type system, three layers, [smart routing](docs/memory-types.md#smart-router), [decay](docs/memory-types.md#decay-algorithm) |
 | [Configuration](docs/configuration.md) | Storage paths, TTL, embedding, environment variables |
 | [Agent Integration](docs/agent-integration.md) | System prompt instructions for automatic tool usage |

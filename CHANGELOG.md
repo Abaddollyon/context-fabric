@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-04-21
+
+### Theme: Performance polish + README refresh
+
+Second pass of the optimization track kicked off in v0.11.1. Cumulative
+vs. the pre-optimization baseline (`npm test` wall clock):
+
+  v0.11.0:  97.9s
+  v0.11.1:  80.9s  (-17%)
+  v0.11.2:  68.0s  (-30% cumulative)
+
+### Changed
+
+- **`src/indexer/code-index.ts` — `searchSemantic` FTS5 prefilter.**
+  The code index's semantic search used to load every chunk row and
+  cosine the full set — the same O(N) anti-pattern L3 had before v0.8.
+  Now uses the BM25 index as a candidate pool (top `max(limit*10, 200)`)
+  and cosines only those. Falls back to full scan when the sanitized
+  query is empty or FTS5 returns zero hits. Also filters out empty
+  embedding arrays (chunks that failed to embed at index time) before
+  the sort. Expected 10–30× speedup on projects with 10K+ chunks.
+- **`src/indexer/scanner.ts` — `isBinary` probe.** Previously read
+  the entire file with `readFileSync` and sampled the first 8KB.
+  Now uses `openSync` + `readSync` for a direct 8KB probe. No more
+  full-file reads just to check for null bytes.
+- **`tests/utils.ts` — tighten `setupTestEnvironment.cleanup()`.**
+  Replaced two unconditional `sleep(100)` calls with `setImmediate()`
+  ticks. Since the test engines are ephemeral and `engine.close()`
+  is synchronous with an in-flight drain, a microtask tick is enough
+  to let queued work settle. Saves ~200ms × integration-test count.
+
+### Docs
+
+- **README** refreshed: version badge 0.7.2 → 0.11.2, test-count badge
+  added, tool count 12 → 18, expanded feature list into Memory &
+  retrieval / Memory intelligence / Operations & DX sections, new
+  Performance section with benchmark numbers.
+
+### Notes
+
+- No API changes, no schema changes.
+- All 697 pre-existing tests continue to pass unchanged.
+
 ## [0.11.1] - 2026-04-21
 
 ### Theme: Performance audit (no feature changes)
