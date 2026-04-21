@@ -192,6 +192,11 @@ const ListMemoriesSchema = z.object({
   projectPath: z.string().optional(),
 });
 
+const BackupSchema = z.object({
+  destDir: z.string().min(1).describe('Absolute directory path to write backup files into. Created if missing.'),
+  projectPath: z.string().optional(),
+});
+
 
 // ============================================================================
 // Tool Definitions
@@ -485,6 +490,18 @@ const TOOLS: Tool[] = [
         },
       },
       required: ["cli"],
+    },
+  },
+  {
+    name: "context.backup",
+    description: "Create a consistent timestamped snapshot of L2 (project) and L3 (semantic) SQLite databases using VACUUM INTO. Writes two files (l2-memory-<ts>.db and l3-semantic-<ts>.db) to destDir. Safe to run while the server is in use.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        destDir: { type: "string", description: "Absolute directory path to write backup files into. Created if missing." },
+        projectPath: { type: "string", description: "Project path whose L2 layer is backed up. Defaults to the current working directory." },
+      },
+      required: ["destDir"],
     },
   },
 ];
@@ -896,6 +913,17 @@ async function handleSetup(args: unknown): Promise<unknown> {
   return result;
 }
 
+async function handleBackup(args: unknown): Promise<unknown> {
+  const params = BackupSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  const backups = engine.backup(params.destDir);
+  return {
+    destDir: params.destDir,
+    files: backups,
+    totalBytes: backups.reduce((s, b) => s + b.size, 0),
+  };
+}
+
 
 // ============================================================================
 // Server Setup
@@ -974,6 +1002,9 @@ async function createServer(): Promise<Server> {
           break;
         case "context.setup":
           result = await handleSetup(args);
+          break;
+        case "context.backup":
+          result = await handleBackup(args);
           break;
         default:
           throw new Error(`Unknown tool: ${name}`);

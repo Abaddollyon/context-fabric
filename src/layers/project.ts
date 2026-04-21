@@ -545,6 +545,31 @@ export class ProjectMemoryLayer {
     try { this.db.close(); } catch { /* ignore */ }
   }
 
+  /**
+   * v0.8: Create a consistent snapshot of this L2 database at `destPath`
+   * using SQLite's VACUUM INTO. Safe to call while the database is in use
+   * (VACUUM INTO takes a read lock; writers block briefly on commit).
+   *
+   * Throws if `destPath` already exists — backups must not clobber.
+   */
+  backup(destPath: string): { path: string; size: number } {
+    if (fs.existsSync(destPath)) {
+      throw new Error(`backup target already exists: ${destPath}`);
+    }
+    const destDir = path.dirname(destPath);
+    fs.mkdirSync(destDir, { recursive: true });
+
+    // Checkpoint first so the main DB file reflects all committed writes.
+    try { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
+
+    // VACUUM INTO requires a string literal in SQL; it doesn't support
+    // parameter binding, so we must escape single-quotes in the path.
+    const escaped = destPath.replace(/'/g, "''");
+    this.db.exec(`VACUUM INTO '${escaped}'`);
+
+    return { path: destPath, size: fs.statSync(destPath).size };
+  }
+
   getDbPath(): string {
     return this.dbPath;
   }

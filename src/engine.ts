@@ -960,6 +960,24 @@ export class ContextEngine {
     this.log('info', 'ContextEngine closed');
   }
 
+  /**
+   * v0.8: Create a consistent snapshot of L2 and L3 into `destDir`.
+   * Files are named `l2-memory-<timestamp>.db` and `l3-semantic-<timestamp>.db`.
+   * Returns metadata for each created file.
+   */
+  backup(destDir: string): Array<{ layer: 'L2' | 'L3'; path: string; size: number }> {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const l2Path = `${destDir.replace(/[/\\]+$/, '')}/l2-memory-${ts}.db`;
+    const l3Path = `${destDir.replace(/[/\\]+$/, '')}/l3-semantic-${ts}.db`;
+
+    const results: Array<{ layer: 'L2' | 'L3'; path: string; size: number }> = [];
+    const l2 = this.l2.backup(l2Path);
+    results.push({ layer: 'L2', ...l2 });
+    const l3 = this.l3.backup(l3Path);
+    results.push({ layer: 'L3', ...l3 });
+    return results;
+  }
+
   // ============================================================================
   // Private Helpers
   // ============================================================================

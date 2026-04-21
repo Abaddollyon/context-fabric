@@ -569,6 +569,25 @@ export class SemanticMemoryLayer {
     try { this.db.close(); } catch { /* ignore */ }
   }
 
+  /**
+   * v0.8: Create a consistent snapshot of L3 at `destPath` via VACUUM INTO.
+   * See ProjectMemoryLayer.backup() for semantics.
+   */
+  backup(destPath: string): { path: string; size: number } {
+    if (fs.existsSync(destPath)) {
+      throw new Error(`backup target already exists: ${destPath}`);
+    }
+    const destDir = path.dirname(destPath);
+    fs.mkdirSync(destDir, { recursive: true });
+
+    try { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
+
+    const escaped = destPath.replace(/'/g, "''");
+    this.db.exec(`VACUUM INTO '${escaped}'`);
+
+    return { path: destPath, size: fs.statSync(destPath).size };
+  }
+
   // ============================================================================
   // Private Helpers
   // ============================================================================
