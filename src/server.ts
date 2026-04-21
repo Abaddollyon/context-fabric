@@ -62,6 +62,8 @@ export const StoreMemorySchema = z.object({
 export const RecallSchema = z.object({
   query: z.string().min(1),
   limit: z.number().int().positive().default(10),
+  offset: z.number().int().min(0).default(0)
+    .describe('Skip the first N results. Combine with limit for pagination. Default 0.'),
   threshold: z.number().min(0).max(1).default(0.7),
   mode: z.enum(["semantic", "keyword", "hybrid"]).default("hybrid")
     .describe("Search mode: 'semantic' (vector cosine), 'keyword' (FTS5 BM25), or 'hybrid' (RRF fusion of both). Default: hybrid."),
@@ -278,6 +280,7 @@ const TOOLS: Tool[] = [
       properties: {
         query: { type: "string", description: "Search query" },
         limit: { type: "number", default: 10 },
+        offset: { type: "number", default: 0, description: "Skip the first N results. Combine with limit for pagination." },
         threshold: { type: "number", default: 0.7, description: "Minimum similarity score (0-1)" },
         mode: {
           type: "string",
@@ -610,7 +613,7 @@ async function handleRecall(args: unknown): Promise<unknown> {
   const layers = params.filter?.layers?.map((l: number) => l as MemoryLayer);
   
   const results = await engine.recall(params.query, {
-    limit: params.limit,
+    limit: params.limit + params.offset,
     mode: params.mode as import('./types.js').RecallMode,
     layers,
     filter: {
@@ -620,11 +623,12 @@ async function handleRecall(args: unknown): Promise<unknown> {
     },
   });
   
-  // Filter by threshold
+  // Filter by threshold, then apply offset/limit pagination.
   const filtered = results.filter(r => r.similarity >= params.threshold);
+  const paged = filtered.slice(params.offset, params.offset + params.limit);
   
   return {
-    results: filtered.map(r => ({
+    results: paged.map(r => ({
       memory: {
         id: r.id,
         type: r.type,
@@ -638,6 +642,9 @@ async function handleRecall(args: unknown): Promise<unknown> {
       layer: r.layer,
     })),
     total: filtered.length,
+    offset: params.offset,
+    limit: params.limit,
+    hasMore: filtered.length > params.offset + params.limit,
   };
 }
 
@@ -1079,8 +1086,21 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
 }
 
-// Run the server
-main().catch((error) => {
-  console.error("Fatal error:", error);
-  process.exit(1);
-});
+// Run the server only when invoked as the entry point (not during test imports).
+// v0.9: guard with import.meta.url check so schema exports can be imported
+// by unit tests without booting the stdio transport.
+import { fileURLToPath } from 'node:url';
+const isEntryPoint = (() => {
+  try {
+    return process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+  } catch {
+    return false;
+  }
+})();
+
+if (isEntryPoint) {
+  main().catch((error) => {
+    console.error("Fatal error:", error);
+    process.exit(1);
+  });
+}
