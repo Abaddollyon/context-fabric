@@ -534,6 +534,10 @@ export class ProjectMemoryLayer {
   }
 
   close(): void {
+    // v0.8: Explicit WAL checkpoint before close so any pending WAL frames
+    // are flushed to the main DB file and the WAL is truncated. Guards
+    // against data loss on subsequent unclean exits.
+    try { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* ignore */ }
     try { this.db.close(); } catch { /* ignore */ }
   }
 

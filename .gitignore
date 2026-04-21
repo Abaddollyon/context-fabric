@@ -57,3 +57,4 @@ local_cache/
 .context-fabric/
 *.db
 *.db-journal
+wiki/
