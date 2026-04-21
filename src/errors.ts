@@ -13,6 +13,8 @@ export type ErrorCode =
   | 'VALIDATION_ERROR'   // Zod / schema parse failure
   | 'NOT_FOUND'          // memory / resource lookup miss
   | 'UNKNOWN_TOOL'       // tool name not registered
+  | 'UNKNOWN_RESOURCE'   // v0.12: MCP Resource uri not registered
+  | 'UNKNOWN_PROMPT'     // v0.12: MCP Prompt name not registered
   | 'SHUTTING_DOWN'      // server is draining
   | 'CONFLICT'           // destination exists, duplicate, etc.
   | 'INTERNAL_ERROR';    // catch-all
