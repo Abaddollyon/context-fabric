@@ -1,6 +1,6 @@
 # Context Fabric — Roadmap to 1.0
 
-> Current version: **0.8.0** | Target: **1.0.0**
+> Current version: **0.9.0** | Target: **1.0.0**
 
 ## Philosophy
 
@@ -42,20 +42,20 @@ The current `recall()` loads **all rows** from SQLite and computes cosine simila
 **Theme: Lock down the MCP tool interface for 1.0 stability guarantees.**
 
 ### Schema Validation
-- [ ] **Strict enum validation** — ensure all tool schemas reject unknown fields (`.strict()` on Zod objects) to catch LLM hallucinated parameters early
-- [ ] **Error response schema** — define a consistent error response shape: `{ error: string, code: string, details?: unknown }` so clients can programmatically handle errors
+- [x] **Strict enum validation** — ensure all tool schemas reject unknown fields (`.strict()` on Zod objects) to catch LLM hallucinated parameters early _(v0.9.0)_
+- [x] **Error response schema** — define a consistent error response shape: `{ error: string, code: string, details?: unknown }` so clients can programmatically handle errors _(v0.9.0 — src/errors.ts)_
 - [ ] **Version negotiation** — return server version in tool list metadata so clients can detect compatibility
 
 ### API Polish
-- [ ] **`context.recall` pagination** — add `offset` parameter for browsing large result sets
+- [x] **`context.recall` pagination** — add `offset` parameter for browsing large result sets _(v0.9.0)_
 - [ ] **`context.list` cursor pagination** — replace offset-based with cursor-based for stable pagination under concurrent writes
 - [ ] **`context.store` deduplication** — detect near-duplicate content before storing (cosine similarity > 0.95 against recent memories) and return the existing ID instead
-- [ ] **`context.store` batch** — accept an array of memories in a single call (reduces MCP round-trips for bulk operations like session import)
-- [ ] **`context.export` / `context.import`** — JSON Lines format for backup, migration, and sharing between projects
+- [x] **`context.store` batch** — accept an array of memories in a single call (reduces MCP round-trips for bulk operations like session import) _(v0.9.0)_
+- [x] **`context.export` / `context.import`** — JSON Lines format for backup, migration, and sharing between projects _(v0.9.0)_
 
 ### Code Quality
-- [ ] **Extract `sanitizeFTS5Query` to shared utility** — already done in this branch (src/fts5.ts); merge to master
-- [ ] **Single version source of truth** — read version from package.json at runtime (`createRequire` or import assertion) instead of hardcoding in 3 places
+- [x] **Extract `sanitizeFTS5Query` to shared utility** — already done in this branch (src/fts5.ts); merge to master _(v0.7.3.1)_
+- [x] **Single version source of truth** — read version from package.json at runtime (`createRequire` or import assertion) instead of hardcoding in 3 places _(v0.9.0 — src/version.ts)_
 - [ ] **Remove legacy type aliases** — `MemoryType` still carries 7 legacy values (`code`, `message`, `thought`, `observation`, `documentation`, `error`, `summary`); deprecate with console warnings, remove in 1.0
 
 ### Test Coverage Gaps (identified in review)

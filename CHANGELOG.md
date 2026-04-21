@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-04-21
+
+### Theme: API Stability & Schema Hardening
+
+Locks down the MCP tool interface for 1.0's stability guarantee. Schemas
+are strict, errors are structured, and the wire format gains batch store
+plus JSONL export/import for backup and migration.
+
+### Added
+- **Strict Zod schemas on all 15 MCP tools** — `.strict()` everywhere so
+  unknown fields are rejected at the schema boundary instead of silently
+  dropped. Catches LLM-hallucinated parameters early. Schemas are now
+  exported from `src/server.ts` for external validation / docs.
+- **Consistent error response schema** — new `src/errors.ts` with
+  `toolError()` / `toolValidationError()` helpers. Every tool failure now
+  returns `{ isError: true, structuredContent: { error: { code, message,
+  details } } }` with stable codes (`validation_error`, `internal_error`,
+  `shutting_down`). Clients can branch on `code` without string parsing.
+- **`context.recall` pagination** — new `offset` parameter (int >= 0,
+  default 0). Response carries `{ offset, limit, hasMore }` for paged UX.
+- **`context.store` batch** — `content` now accepts `string | string[]`.
+  Array form stores each item in sequence and returns `{ count, ids[] }`,
+  removing per-memory MCP round-trip overhead for bulk import.
+- **`context.export` / `context.import`** — JSONL round-trip for L2/L3
+  memories. `context.export` writes one memory per line, optionally
+  filtered by layer. `context.import` parses, skips malformed lines with
+  structured per-line errors, and returns `{ imported, skipped,
+  errors[] }`. Enables backup, migration between projects, and shareable
+  memory bundles. Tool count: **13 → 15**.
+- **Single version source** — new `src/version.ts` reads version from
+  `package.json` at runtime, eliminating the three-way drift risk called
+  out in the v0.7.3.1 review.
+
+### Fixed
+- **Test-side-effect server boot** — `src/server.ts` now gates `main()`
+  behind an `import.meta.url` check so test files that import Zod schema
+  exports no longer start a live stdio MCP server and pollute test
+  output.
+
+### Changed
+- Tool count: **13 → 15** (added `context.export`, `context.import`).
+- Error payloads are now always structured (no more raw error strings in
+  tool responses).
+
 ## [0.8.0] - 2026-04-21
 
 ### Theme: Scalable Recall & Robustness
