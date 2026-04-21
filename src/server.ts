@@ -16,6 +16,7 @@ import { z } from "zod";
 import { initialize, getConfig } from "./config.js";
 import { ContextEngine } from "./engine.js";
 import { setupForCLI, previewConfig, type SupportedCLI } from "./setup.js";
+import { ShutdownController } from "./shutdown.js";
 import {
   MemoryLayer,
   MemoryType,
@@ -497,6 +498,10 @@ const MAX_ENGINES = 32;
 const engines = new Map<string, ContextEngine>();
 let defaultEngine: ContextEngine | null = null;
 
+// v0.8: Shutdown coordinator — tracks in-flight tool calls so SIGTERM/SIGINT
+// can wait for them to finish before engines are closed. Exported for tests.
+export const shutdown = new ShutdownController();
+
 /**
  * Get or create a ContextEngine for a project.
  * Evicts the least-recently-used engine when the cache exceeds MAX_ENGINES.
@@ -918,6 +923,18 @@ async function createServer(): Promise<Server> {
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params as { name: string; arguments?: unknown };
 
+    // v0.8: Reject new calls while shutting down; otherwise bracket the
+    // handler with begin/end so drain() knows when we're idle.
+    try {
+      shutdown.begin();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: message }) }],
+        isError: true,
+      };
+    }
+
     try {
       let result: unknown;
 
@@ -983,6 +1000,8 @@ async function createServer(): Promise<Server> {
         ],
         isError: true,
       };
+    } finally {
+      shutdown.end();
     }
   });
 
@@ -1008,24 +1027,25 @@ async function main(): Promise<void> {
   
   console.error("Context Fabric MCP Server running on stdio");
   
-  // Cleanup on exit
-  process.on('SIGINT', () => {
-    console.error("\nShutting down Context Fabric...");
+  // v0.8: Graceful shutdown — wait up to 5s for in-flight tool calls to
+  // finish, then close engines cleanly (which also checkpoints WAL).
+  const gracefulShutdown = async (signal: string) => {
+    console.error(`\n[context-fabric] ${signal} received; draining in-flight calls...`);
+    const result = await shutdown.drain(5000);
+    if (!result.drained) {
+      console.error(`[context-fabric] drain timed out with ${result.remaining} call(s) still running; closing anyway.`);
+    } else {
+      console.error('[context-fabric] drain complete.');
+    }
     for (const [path, engine] of engines) {
-      console.error(`Closing engine for ${path}...`);
+      console.error(`[context-fabric] Closing engine for ${path}...`);
       engine.close();
     }
     process.exit(0);
-  });
-  
-  process.on('SIGTERM', () => {
-    console.error("\nShutting down Context Fabric...");
-    for (const [path, engine] of engines) {
-      console.error(`Closing engine for ${path}...`);
-      engine.close();
-    }
-    process.exit(0);
-  });
+  };
+
+  process.on('SIGINT', () => { void gracefulShutdown('SIGINT'); });
+  process.on('SIGTERM', () => { void gracefulShutdown('SIGTERM'); });
 }
 
 // Run the server
