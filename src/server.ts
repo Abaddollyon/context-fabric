@@ -31,6 +31,23 @@ import { TimeService } from "./time.js";
 // Tool Schemas (Zod)
 // ============================================================================
 
+/**
+ * v0.11: structured citation block. Strict — unknown keys rejected so
+ * LLM hallucinations don't quietly slip through into persisted metadata.
+ * `capturedAt` is optional here; the engine stamps it at store-time if omitted.
+ */
+export const ProvenanceSchema = z.object({
+  sessionId: z.string().optional(),
+  eventId: z.string().optional(),
+  toolCallId: z.string().optional(),
+  filePath: z.string().optional(),
+  lineStart: z.number().int().min(0).optional(),
+  lineEnd: z.number().int().min(0).optional(),
+  commitSha: z.string().optional(),
+  sourceUrl: z.string().url().optional(),
+  capturedAt: z.number().int().positive().optional(),
+}).strict();
+
 export const StoreMemorySchema = z.object({
   type: z.enum(["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"]),
   layer: z.number().int().min(1).max(3).optional(),
@@ -55,6 +72,12 @@ export const StoreMemorySchema = z.object({
     cliType: z.string().default("generic"),
     weight: z.number().int().min(1).max(5).default(3)
       .describe('Priority 1–5 (default 3). 4–5 surfaces above unweighted memories in recall and context window.'),
+    // v0.11: optional provenance block — who/where/when this memory came from.
+    provenance: ProvenanceSchema.optional()
+      .describe('Citation block tying this memory to its source (session, tool call, file, commit, URL).'),
+    // v0.11: bi-temporal supersession — id of the L3 memory this one replaces.
+    supersedes: z.string().uuid().optional()
+      .describe('ID of an existing L3 memory this one supersedes. The predecessor is marked invalid (valid_until = now) and linked in both directions.'),
   }),
   pinned: z.boolean().optional()
     .describe('Pin this memory to protect it from decay and summarization. Pinned memories are never automatically deleted.'),
@@ -76,6 +99,11 @@ export const RecallSchema = z.object({
     projectPath: z.string().optional(),
   }).optional(),
   sessionId: z.string().optional(),
+  // v0.11: bi-temporal recall controls.
+  includeSuperseded: z.boolean().default(false)
+    .describe('Include memories that have been explicitly superseded. Default false (only currently-valid memories are returned).'),
+  asOf: z.number().int().positive().optional()
+    .describe('Epoch ms. Query the state of memory as it existed at this point in time. Overrides the default "hide superseded" behavior with bi-temporal windowing.'),
 }).strict();
 
 export const GetCurrentContextSchema = z.object({
@@ -215,6 +243,7 @@ const StoreItemSchema = z.object({
     projectPath: z.string().optional(),
     cliType: z.string().default("generic"),
     weight: z.number().int().min(1).max(5).default(3),
+    provenance: ProvenanceSchema.optional(),
   }),
   pinned: z.boolean().optional(),
   ttl: z.number().int().positive().optional(),
@@ -743,6 +772,8 @@ async function handleRecall(args: unknown): Promise<unknown> {
       tags: params.filter?.tags,
       projectPath: params.filter?.projectPath,
     },
+    includeSuperseded: params.includeSuperseded,
+    asOf: params.asOf,
   });
   
   // Filter by threshold, then apply offset/limit pagination.

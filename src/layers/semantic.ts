@@ -157,6 +157,22 @@ export class SemanticMemoryLayer {
     }
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_sem_pinned ON semantic_memories(pinned)');
 
+    // v0.11: bi-temporal columns. Nullable-by-default so existing rows
+    // stay valid (valid_from = NULL is treated as "from createdAt").
+    if (!cols.includes('valid_from')) {
+      this.db.exec('ALTER TABLE semantic_memories ADD COLUMN valid_from INTEGER');
+    }
+    if (!cols.includes('valid_until')) {
+      this.db.exec('ALTER TABLE semantic_memories ADD COLUMN valid_until INTEGER');
+    }
+    if (!cols.includes('supersedes_id')) {
+      this.db.exec('ALTER TABLE semantic_memories ADD COLUMN supersedes_id TEXT');
+    }
+    if (!cols.includes('superseded_by_id')) {
+      this.db.exec('ALTER TABLE semantic_memories ADD COLUMN superseded_by_id TEXT');
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_sem_valid_until ON semantic_memories(valid_until)');
+
     // Migration: FTS5 virtual table for full-text search (v0.7)
     this.initFTS5();
   }
@@ -208,8 +224,8 @@ export class SemanticMemoryLayer {
   private prepareStatements(): void {
     this.stmtInsert = this.db.prepare(`
       INSERT INTO semantic_memories
-        (id, type, content, metadata, tags, embedding, created_at, updated_at, accessed_at, access_count, relevance_score, pinned)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1.0, ?)
+        (id, type, content, metadata, tags, embedding, created_at, updated_at, accessed_at, access_count, relevance_score, pinned, valid_from)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1.0, ?, ?)
     `);
 
     this.stmtGetById = this.db.prepare('SELECT * FROM semantic_memories WHERE id = ?');
@@ -302,6 +318,7 @@ export class SemanticMemoryLayer {
       now,
       now,
       pinned ? 1 : 0,
+      now, // v0.11: valid_from defaults to created_at
     );
 
     // v0.8: mirror into vec0 when sqlite-vec is available. Rowid comes from
@@ -666,9 +683,139 @@ export class SemanticMemoryLayer {
     return sanitizeFTS5Query(query);
   }
 
+  /**
+   * v0.11: bi-temporal supersession. Links `oldId` ← `newId` in both
+   * directions and stamps `valid_until = now` on the predecessor. No-op
+   * when oldId does not exist (returns false so callers can decide
+   * whether to surface that).
+   */
+  async supersede(oldId: string, newId: string): Promise<boolean> {
+    const oldRow = this.stmtGetById.get(oldId) as DbRow | undefined;
+    const newRow = this.stmtGetById.get(newId) as DbRow | undefined;
+    if (!oldRow || !newRow) return false;
+
+    const now = Date.now();
+    this.db.exec('BEGIN');
+    try {
+      this.db.prepare(
+        'UPDATE semantic_memories SET valid_until = ?, superseded_by_id = ?, updated_at = ? WHERE id = ?',
+      ).run(now, newId, now, oldId);
+      this.db.prepare(
+        'UPDATE semantic_memories SET supersedes_id = ?, updated_at = ? WHERE id = ?',
+      ).run(oldId, now, newId);
+      this.db.exec('COMMIT');
+      return true;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
   /** Expose the shared EmbeddingService so the code index can reuse it. */
   getEmbeddingService(): EmbeddingService {
     return this.embedder;
+  }
+
+  /**
+   * v0.11: find the nearest existing memory to `content` by cosine. Returns
+   * the match only if similarity >= threshold, else null. Uses the FTS5
+   * prefilter path for scalability — the near-dup pool is drawn from the
+   * top-poolSize BM25 candidates, falling back to full scan only when
+   * FTS5 produces nothing (i.e. brand-new vocabulary).
+   *
+   * Dedup is per-layer-instance; callers decide whether to apply it.
+   */
+  async findNearDuplicate(
+    content: string,
+    threshold = 0.95,
+    poolSize = 50,
+  ): Promise<ScoredMemory | null> {
+    if (!content.trim()) return null;
+
+    const queryEmbedding = await this.embedder.embed(content);
+
+    // First try the BM25-prefiltered pool — cheap and matches recall semantics.
+    let rows: DbRow[] = [];
+    const sanitized = SemanticMemoryLayer.sanitizeFTS5Query(content);
+    if (sanitized) {
+      try {
+        rows = this.stmtSearchBM25.all(sanitized, poolSize) as unknown as DbRow[];
+      } catch { /* fall through */ }
+    }
+
+    // Fall back to full scan when FTS5 returns nothing. This handles the
+    // empty-pool case for very short or all-stopword content.
+    if (rows.length === 0) {
+      rows = this.stmtGetAll.all() as unknown as DbRow[];
+    }
+
+    let best: { row: DbRow; sim: number } | null = null;
+    for (const row of rows) {
+      try {
+        const embedding: number[] = JSON.parse(row.embedding);
+        const sim = cosineSimilarity(queryEmbedding, embedding);
+        if (sim >= threshold && (!best || sim > best.sim)) {
+          best = { row, sim };
+        }
+      } catch {
+        /* skip malformed */
+      }
+    }
+
+    return best ? this.rowToScoredMemory(best.row, best.sim) : null;
+  }
+
+  /**
+   * v0.11 merge-on-dedup helper. Unions `addTags` with the existing row's
+   * tags, shallow-merges `addProvenance` onto metadata.provenance (new
+   * values overwrite), and touches the access counter. Returns the updated
+   * memory. Does not re-embed (content is unchanged by definition).
+   */
+  async mergeInto(
+    existingId: string,
+    addTags: string[] = [],
+    addProvenance?: Record<string, unknown>,
+  ): Promise<Memory> {
+    const row = this.stmtGetById.get(existingId) as DbRow | undefined;
+    if (!row) throw new Error(`Memory not found: ${existingId}`);
+
+    let existingTags: string[] = [];
+    try { existingTags = JSON.parse(row.tags); } catch { /* ignore */ }
+    const mergedTags = Array.from(new Set([...existingTags, ...addTags]));
+
+    let existingMeta: Record<string, unknown> = {};
+    try { existingMeta = JSON.parse(row.metadata); } catch { /* ignore */ }
+    if (addProvenance) {
+      const existingProv = (existingMeta.provenance as Record<string, unknown> | undefined) ?? {};
+      existingMeta = {
+        ...existingMeta,
+        provenance: { ...existingProv, ...addProvenance },
+      };
+    }
+
+    const now = Date.now();
+    this.stmtUpdateFull.run(
+      row.content,
+      JSON.stringify(existingMeta),
+      JSON.stringify(mergedTags),
+      row.embedding,
+      now,
+      existingId,
+    );
+    await this.touch(existingId);
+
+    return {
+      id: row.id,
+      type: row.type as MemoryType,
+      content: row.content,
+      metadata: existingMeta as MemoryMetadata,
+      tags: mergedTags,
+      createdAt: row.created_at,
+      updatedAt: now,
+      accessCount: row.access_count + 1,
+      lastAccessedAt: now,
+      pinned: row.pinned === 1,
+    };
   }
 
   close(): void {
@@ -727,6 +874,16 @@ export class SemanticMemoryLayer {
       console.error('[ContextFabric] Corrupted tags in memory', row.id, err);
     }
 
+    // v0.11: project bi-temporal columns onto metadata.temporal so
+    // callers have a single typed surface. Back-compat: valid_from
+    // falls back to created_at for rows written before the migration.
+    metadata.temporal = {
+      validFrom: row.valid_from ?? row.created_at,
+      validUntil: row.valid_until ?? null,
+      supersedesId: row.supersedes_id ?? null,
+      supersededById: row.superseded_by_id ?? null,
+    };
+
     return {
       id: row.id,
       type: row.type as MemoryType,
@@ -759,6 +916,11 @@ interface DbRow {
   access_count: number;
   relevance_score: number;
   pinned: number; // 0 = normal, 1 = pinned (exempt from decay)
+  // v0.11 bi-temporal columns
+  valid_from: number | null;
+  valid_until: number | null;
+  supersedes_id: string | null;
+  superseded_by_id: string | null;
 }
 
 export default SemanticMemoryLayer;
