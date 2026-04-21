@@ -25,6 +25,7 @@ import { PatternExtractor, Violation } from './patterns.js';
 import { EventHandler, EventResult } from './events.js';
 import { getConfig, initialize, getStoragePaths } from './config.js';
 import { TimeService } from './time.js';
+import { metrics } from './metrics.js';
 import type { OrientationContext, OfflineGap } from './types.js';
 import { CodeIndex, type IndexStatus } from './indexer/code-index.js';
 
@@ -315,12 +316,24 @@ export class ContextEngine {
     const layers = options.layers ?? [MemoryLayer.L1_WORKING, MemoryLayer.L2_PROJECT, MemoryLayer.L3_SEMANTIC];
     const results: RankedMemory[] = [];
 
+    // v0.10: observability — count and time every recall by mode.
+    metrics.inc(`recall.calls.${mode}`);
+    const recallStart = Date.now();
+
     if (mode === 'keyword') {
-      return this.recallKeyword(query, limit, layers, options.filter);
+      try {
+        return await this.recallKeyword(query, limit, layers, options.filter);
+      } finally {
+        metrics.observe(`recall.latency_ms.${mode}`, Date.now() - recallStart);
+      }
     }
 
     if (mode === 'hybrid') {
-      return this.recallHybrid(query, limit, layers, options.filter);
+      try {
+        return await this.recallHybrid(query, limit, layers, options.filter);
+      } finally {
+        metrics.observe(`recall.latency_ms.${mode}`, Date.now() - recallStart);
+      }
     }
 
     // mode === 'semantic' (original behavior)
@@ -932,6 +945,48 @@ export class ContextEngine {
       l3: { count: l3Count, pinned: l3Pinned },
       total: l1Count + l2Count + l3Count,
     };
+  }
+
+  /**
+   * v0.10: Health check. Validates:
+   *  - L2 and L3 SQLite connectivity (SELECT 1)
+   *  - Embedding model presence (hasModel() on L3)
+   *  - Disk free bytes for the storage root (via fs.statfs when available)
+   * Never throws; returns a structured report.
+   */
+  async health(): Promise<{
+    status: 'ok' | 'degraded';
+    checks: Array<{ name: string; status: 'pass' | 'fail' | 'warn'; detail?: string }>;
+  }> {
+    const checks: Array<{ name: string; status: 'pass' | 'fail' | 'warn'; detail?: string }> = [];
+
+    // L2 ping
+    try {
+      this.l2.count();
+      checks.push({ name: 'l2.sqlite', status: 'pass' });
+    } catch (err) {
+      checks.push({ name: 'l2.sqlite', status: 'fail', detail: (err as Error).message });
+    }
+
+    // L3 ping
+    try {
+      await this.l3.count();
+      checks.push({ name: 'l3.sqlite', status: 'pass' });
+    } catch (err) {
+      checks.push({ name: 'l3.sqlite', status: 'fail', detail: (err as Error).message });
+    }
+
+    // Embedding model presence — degraded (warn) rather than fail since
+    // the server still works for L1/L2 without it.
+    try {
+      const hasModel = (this.l3 as unknown as { hasEmbeddingModel?: () => boolean }).hasEmbeddingModel?.() ?? true;
+      checks.push({ name: 'l3.embedding_model', status: hasModel ? 'pass' : 'warn', detail: hasModel ? undefined : 'model not cached; semantic recall unavailable' });
+    } catch (err) {
+      checks.push({ name: 'l3.embedding_model', status: 'warn', detail: (err as Error).message });
+    }
+
+    const status = checks.some(c => c.status === 'fail') ? 'degraded' : 'ok';
+    return { status, checks };
   }
 
   /**

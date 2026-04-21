@@ -241,6 +241,15 @@ export const ImportSchema = z.object({
   projectPath: z.string().optional(),
 }).strict();
 
+export const MetricsSchema = z.object({
+  projectPath: z.string().optional(),
+  reset: z.boolean().optional().default(false),
+}).strict();
+
+export const HealthSchema = z.object({
+  projectPath: z.string().optional(),
+}).strict();
+
 
 // ============================================================================
 // Tool Definitions
@@ -599,6 +608,25 @@ const TOOLS: Tool[] = [
         projectPath: { type: "string" },
       },
       required: ["srcPath"],
+    },
+  },
+  {
+    name: "context.metrics",
+    description: "Return in-process observability metrics: counters and latency histograms (p50/p95/p99) for recall calls by mode, plus memory counts per layer.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectPath: { type: "string" },
+        reset: { type: "boolean", description: "If true, reset histograms/counters after snapshot. Default false." },
+      },
+    },
+  },
+  {
+    name: "context.health",
+    description: "Health check: validates L2/L3 SQLite connectivity and embedding model presence. Returns {status: 'ok' | 'degraded', checks: [...]}.",
+    inputSchema: {
+      type: "object",
+      properties: { projectPath: { type: "string" } },
     },
   },
 ];
@@ -1073,6 +1101,27 @@ async function handleImport(args: unknown): Promise<unknown> {
   return engine.importMemories(params.srcPath);
 }
 
+async function handleMetrics(args: unknown): Promise<unknown> {
+  const params = MetricsSchema.parse(args);
+  const { metrics } = await import('./metrics.js');
+  const engine = getEngine(params.projectPath);
+  const stats = await engine.getStats();
+  const snap = metrics.snapshot();
+  if (params.reset) metrics.reset();
+  return {
+    stats,
+    counters: snap.counters,
+    histograms: snap.histograms,
+    reset: params.reset ?? false,
+  };
+}
+
+async function handleHealth(args: unknown): Promise<unknown> {
+  const params = HealthSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  return engine.health();
+}
+
 
 // ============================================================================
 // Server Setup
@@ -1165,6 +1214,12 @@ async function createServer(): Promise<Server> {
           break;
         case "context.import":
           result = await handleImport(args);
+          break;
+        case "context.metrics":
+          result = await handleMetrics(args);
+          break;
+        case "context.health":
+          result = await handleHealth(args);
           break;
         default:
           throw new ToolError('UNKNOWN_TOOL', `Unknown tool: ${name}`);

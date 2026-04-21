@@ -1,6 +1,6 @@
 # Context Fabric — Roadmap to 1.0
 
-> Current version: **0.9.0** | Target: **1.0.0**
+> Current version: **0.10.0** | Target: **1.0.0**
 
 ## Philosophy
 
@@ -73,14 +73,14 @@ The current `recall()` loads **all rows** from SQLite and computes cosine simila
 **Theme: Make Context Fabric debuggable and pleasant to operate.**
 
 ### Observability
-- [ ] **Structured logging** — replace `console.error`/`console.warn` with a structured logger (JSON lines to stderr) with configurable level
-- [ ] **Metrics endpoint** — expose key metrics via a `context.metrics` tool or resource:
+- [x] **Structured logging** — replace `console.error`/`console.warn` with a structured logger (JSON lines to stderr) with configurable level _(v0.10.0 — src/logger.ts; legacy call sites intentionally left for gradual migration)_
+- [x] **Metrics endpoint** — expose key metrics via a `context.metrics` tool or resource: _(v0.10.0 — src/metrics.ts)_
   - Memory counts by layer/type
   - Recall latency (p50, p95, p99)
-  - Embedding cache hit rate
-  - FTS5 query count
-  - Decay deletions per cycle
-- [ ] **Health check** — `context.health` tool that validates DB connectivity, embedding model availability, and disk space
+  - Embedding cache hit rate _(deferred — not yet wired from EmbeddingService)_
+  - FTS5 query count _(deferred)_
+  - Decay deletions per cycle _(deferred)_
+- [x] **Health check** — `context.health` tool that validates DB connectivity, embedding model availability, and disk space _(v0.10.0 — DB + model; disk-space check deferred)_
 
 ### Developer Experience
 - [ ] **`npx context-fabric init`** — CLI wizard that auto-detects installed AI CLIs and configures them all in one step

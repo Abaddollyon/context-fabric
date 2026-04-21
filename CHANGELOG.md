@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-04-21
+
+### Theme: Observability & Developer Experience
+
+Makes the running server inspectable from the outside. Operators can now
+answer "is the memory layer healthy?" and "how fast is recall?" without
+reading source code.
+
+### Added
+- **Structured JSON logger** (`src/logger.ts`) — one JSON object per line
+  to stderr, level-filtered via `CONTEXT_FABRIC_LOG_LEVEL` env var.
+  Shape: `{ ts, level, module, msg, ...fields }`. Reserved keys cannot
+  be shadowed by fields. Defaults to `warn` under `NODE_ENV=test` to
+  keep test output clean, `info` otherwise. `createLogger('module')`
+  returns a scoped logger with a `.child('sub')` helper.
+- **In-process metrics registry** (`src/metrics.ts`) — counters plus
+  reservoir-sampled latency histograms (p50/p95/p99/max). `recall()` is
+  now instrumented with `recall.calls.{mode}` and
+  `recall.latency_ms.{mode}`.
+- **`context.metrics` MCP tool** — returns `{ stats, counters,
+  histograms, reset }` where stats come from `engine.getStats()` (memory
+  counts per layer/type) and counters/histograms come from the registry.
+  Optional `reset: true` clears histograms after snapshot for
+  interval-style collection.
+- **`context.health` MCP tool** — returns
+  `{ status: 'ok' | 'degraded', checks: [...] }` validating L2/L3
+  SQLite connectivity and embedding model presence. Model absence is a
+  `warn` (not `fail`) since the server degrades gracefully without it.
+  Tool count: **15 → 17**.
+
+### Deferred
+- Structured logger retrofit of all existing `console.*` call sites in
+  engine/layers (done as gradual migration, not hard-cut).
+- Embedding cache hit-rate, FTS5 query count, decay-deletions-per-cycle
+  metrics (require wiring from `EmbeddingService`, `fts5.ts`, and decay
+  loop respectively).
+- Disk-space check in `context.health`.
+- CLI wizard (`npx context-fabric init/doctor/migrate`), shell
+  completions, and API reference generation — pushed to the v1.0.0
+  release-prep cycle.
+
 ## [0.9.0] - 2026-04-21
 
 ### Theme: API Stability & Schema Hardening
