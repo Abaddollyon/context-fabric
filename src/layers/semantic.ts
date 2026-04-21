@@ -12,6 +12,7 @@ import { Memory, MemoryType, MemoryMetadata, RelationshipEdge } from '../types.j
 import { EmbeddingService } from '../embedding.js';
 import { sanitizeFTS5Query } from '../fts5.js';
 import { warnIfCorrupted } from '../db-integrity.js';
+import { tryLoadSqliteVec, type SqliteVecStatus } from '../sqlite-vec.js';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
@@ -51,6 +52,10 @@ export class SemanticMemoryLayer {
   private embedder: EmbeddingService;
   private decayDays: number;
   private decayThreshold: number;
+  /** v0.8: sqlite-vec handle — loaded iff the optional extension is present. */
+  private vec: SqliteVecStatus;
+  /** Fixed embedding dimension; bge-small-en produces 384-D vectors. */
+  private static readonly EMBEDDING_DIM = 384;
 
   // Prepared statements
   private stmtInsert!: StatementSync;
@@ -75,19 +80,53 @@ export class SemanticMemoryLayer {
     this.decayThreshold = options.decayThreshold ?? 0.2;
 
     if (options.isEphemeral) {
-      this.db = new DatabaseSync(':memory:');
+      this.db = new DatabaseSync(':memory:', { allowExtension: true });
     } else {
       const baseDir = options.baseDir ?? path.join(process.cwd(), '.semantic-memory');
       fs.mkdirSync(baseDir, { recursive: true });
       const dbPath = path.join(baseDir, 'semantic.db');
-      this.db = new DatabaseSync(dbPath);
+      this.db = new DatabaseSync(dbPath, { allowExtension: true });
       // v0.8: startup integrity check — warn (don't fail) on corruption.
       warnIfCorrupted(this.db, 'L3:semantic');
     }
 
     this.initSchema();
     this.prepareStatements();
+    // v0.8: attempt optional sqlite-vec acceleration. Non-fatal on any failure.
+    this.vec = tryLoadSqliteVec(this.db, SemanticMemoryLayer.EMBEDDING_DIM);
+    if (this.vec.loaded) {
+      this.backfillVecIndex();
+    }
     this.embedder = new EmbeddingService(undefined, options.embeddingTimeoutMs ?? 30_000);
+  }
+
+  /** v0.8: whether sqlite-vec was successfully loaded on this instance. */
+  get vecEnabled(): boolean {
+    return this.vec.loaded;
+  }
+
+  /**
+   * v0.8: one-time backfill of the vec0 table from semantic_memories on
+   * startup. Cheap when already populated (INSERT OR REPLACE is idempotent
+   * via the rowid pk) and lets existing DBs opt in to vec acceleration
+   * just by installing the sqlite-vec package.
+   */
+  private backfillVecIndex(): void {
+    if (!this.vec.loaded) return;
+    const rows = this.db.prepare('SELECT rowid, embedding FROM semantic_memories').all() as Array<{
+      rowid: number;
+      embedding: string;
+    }>;
+    for (const row of rows) {
+      try {
+        const embedding = JSON.parse(row.embedding) as number[];
+        if (Array.isArray(embedding) && embedding.length === SemanticMemoryLayer.EMBEDDING_DIM) {
+          this.vec.upsert(row.rowid, embedding);
+        }
+      } catch {
+        /* skip malformed rows */
+      }
+    }
   }
 
   private initSchema(): void {
@@ -252,7 +291,7 @@ export class SemanticMemoryLayer {
 
     const embedding = await this.embedder.embed(content);
 
-    this.stmtInsert.run(
+    const result = this.stmtInsert.run(
       id,
       type,
       content,
@@ -264,6 +303,15 @@ export class SemanticMemoryLayer {
       now,
       pinned ? 1 : 0,
     );
+
+    // v0.8: mirror into vec0 when sqlite-vec is available. Rowid comes from
+    // the just-inserted row; lastInsertRowid is a bigint on node:sqlite.
+    if (this.vec.loaded) {
+      const rowid = typeof result.lastInsertRowid === 'bigint'
+        ? Number(result.lastInsertRowid)
+        : result.lastInsertRowid;
+      try { this.vec.upsert(rowid, embedding); } catch { /* non-fatal */ }
+    }
 
     return memory;
   }
@@ -318,6 +366,61 @@ export class SemanticMemoryLayer {
 
     scored.sort((a, b) => b.similarity - a.similarity);
     return scored.slice(0, limit).map(({ row, similarity }) => this.rowToScoredMemory(row, similarity));
+  }
+
+  /**
+   * v0.8: ANN recall powered by sqlite-vec. Only usable when the optional
+   * extension was loaded at construction time — callers should check
+   * `vecEnabled` first, or use the auto-dispatching recallAccelerated().
+   *
+   * Internally uses a vec0 `embedding MATCH ?` KNN query against the
+   * mirrored `vec_items` table and then hydrates full rows by rowid.
+   * Distance from sqlite-vec is cosine distance in [0, 2]; we return
+   * similarity = 1 - (distance / 2) mapped back into [0, 1] to match the
+   * shape of the cosine-based paths.
+   */
+  async recallVec(query: string, limit = 10): Promise<ScoredMemory[]> {
+    if (!this.vec.loaded) {
+      throw new Error('recallVec called but sqlite-vec is not loaded');
+    }
+    if (!query.trim()) return [];
+
+    const queryEmbedding = await this.embedder.embed(query);
+    const hits = this.vec.knn(queryEmbedding, limit);
+    if (hits.length === 0) return [];
+
+    // Hydrate rows by rowid in a single IN (...) query, preserving rank order.
+    const placeholders = hits.map(() => '?').join(',');
+    const stmt = this.db.prepare(
+      `SELECT rowid, * FROM semantic_memories WHERE rowid IN (${placeholders})`,
+    );
+    const rows = stmt.all(...hits.map(h => h.rowid)) as unknown as Array<DbRow & { rowid: number }>;
+    const byRowid = new Map(rows.map(r => [r.rowid, r]));
+
+    return hits
+      .map(({ rowid, distance }) => {
+        const row = byRowid.get(rowid);
+        if (!row) return null;
+        // sqlite-vec cosine distance is in [0, 2]; convert back to [0, 1].
+        const similarity = Math.max(0, 1 - distance / 2);
+        return this.rowToScoredMemory(row, similarity);
+      })
+      .filter((m): m is ScoredMemory => m !== null);
+  }
+
+  /**
+   * v0.8: single entry point for accelerated recall. Dispatches to
+   * recallVec() when sqlite-vec is loaded, else recallPrefiltered().
+   */
+  async recallAccelerated(query: string, limit = 10, poolSize = 200): Promise<ScoredMemory[]> {
+    if (this.vec.loaded) {
+      try {
+        return await this.recallVec(query, limit);
+      } catch {
+        // Fall through to the cosine path on any vec runtime error.
+      }
+    }
+    return this.recallPrefiltered(query, limit, poolSize);
   }
 
   async get(id: string): Promise<Memory | undefined> {
@@ -405,9 +508,16 @@ export class SemanticMemoryLayer {
   }
 
   async delete(id: string): Promise<boolean> {
-    const existing = this.stmtGetById.get(id);
+    const existing = this.stmtGetById.get(id) as { rowid: number } | undefined;
     if (!existing) return false;
+    // Capture rowid before the delete so we can clean the vec0 mirror.
+    const rowidRow = this.db.prepare('SELECT rowid FROM semantic_memories WHERE id = ?').get(id) as
+      | { rowid: number }
+      | undefined;
     this.stmtDelete.run(id);
+    if (this.vec.loaded && rowidRow) {
+      try { this.vec.remove(rowidRow.rowid); } catch { /* non-fatal */ }
+    }
     return true;
   }
 

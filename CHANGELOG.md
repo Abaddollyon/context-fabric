@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-04-21
+
+### Theme: Closing out the v0.8 stretch items
+
+Cleans up the two outstanding boxes from the v0.8 "Scalable Recall &
+Robustness" milestone that were deferred in the first pass. No API
+surface changes; all work is internal hardening.
+
+### Added
+- **Optional sqlite-vec acceleration (`src/sqlite-vec.ts`)** — when the
+  `sqlite-vec` npm package is installed (not a dependency — opt-in),
+  `SemanticMemoryLayer` now loads it into its `DatabaseSync`, creates a
+  mirrored `vec_items` vec0 virtual table, backfills it from
+  `semantic_memories` on startup, and routes hybrid-mode L3 recall
+  through a native KNN query (`embedding MATCH ?`) instead of the
+  FTS5-prefiltered cosine scan. Gracefully falls back to the existing
+  path when the package is missing or extension loading fails; can be
+  explicitly disabled via `CF_DISABLE_SQLITE_VEC=1`. Exposes a new
+  `vecEnabled` getter plus `recallVec()` / `recallAccelerated()`
+  methods. Engine hybrid mode auto-dispatches via `recallAccelerated()`.
+- **Engine-wide closed-state guard** — the v0.7 `closed` flag only
+  protected the background decay interval. All public async
+  `ContextEngine` methods (`store`, `recall`, `promote`, `demote`,
+  `summarize`, `getMemory`, `updateMemory`, `deleteMemory`,
+  `listMemories`) plus `getCodeIndex()` now invoke a shared
+  `ensureOpen()` helper that rejects with a clear
+  `"ContextEngine is closed; cannot execute <op>"` error after
+  `close()` has been called. Prevents use-after-close SQLite crashes
+  when in-flight async work races with a shutdown signal.
+
+### Removed
+- `ROADMAP.md` — roadmap-to-1.0 is now tracked in the `CHANGELOG.md` entries
+  plus git tags. The separate document had drifted from the actual
+  completion state and duplicated release-note content.
+
+### Tests
+- **678 passing**, 34 files. New suites:
+  `tests/unit/sqlite-vec.test.ts` (detection, opt-out, fallback
+  behaviour) and `tests/unit/engine-closed-guard.test.ts` (every guarded
+  method rejects after close).
+
 ## [0.10.0] - 2026-04-21
 
 ### Theme: Observability & Developer Experience

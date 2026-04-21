@@ -160,10 +160,24 @@ export class ContextEngine {
   // ============================================================================
 
   /**
+   * v0.8: shared guard for all async public methods. Rejects calls made
+   * after close() so we never touch a closed SQLite handle from in-flight
+   * work (decay interval races were handled by the `closed` flag, but any
+   * awaited handler kept running even after close — this extends that
+   * guard uniformly).
+   */
+  private ensureOpen(op: string): void {
+    if (this.closed) {
+      throw new Error(`ContextEngine is closed; cannot execute ${op}`);
+    }
+  }
+
+  /**
    * Get or create the code index (lazy initialization).
    * Shares the L3 embedding service to avoid loading the model twice.
    */
   getCodeIndex(): CodeIndex {
+    this.ensureOpen('getCodeIndex');
     if (!this.codeIndex) {
       this.codeIndex = new CodeIndex({
         projectPath: this.projectPath,
@@ -178,6 +192,7 @@ export class ContextEngine {
    * Auto-route storage based on content type and metadata
    */
   async store(content: string, type: MemoryType, options: StoreOptions = {}): Promise<Memory> {
+    this.ensureOpen('store');
     // Use SmartRouter to determine layer if not specified
     let targetLayer = options.layer;
     let routingReason = 'Layer explicitly specified';
@@ -311,6 +326,7 @@ export class ContextEngine {
    * - 'hybrid': RRF fusion of keyword + semantic rankers (PR 3)
    */
   async recall(query: string, options: RecallOptions = {}): Promise<RankedMemory[]> {
+    this.ensureOpen('recall');
     const limit = options.limit ?? 10;
     const mode = options.mode ?? 'hybrid';
     const layers = options.layers ?? [MemoryLayer.L1_WORKING, MemoryLayer.L2_PROJECT, MemoryLayer.L3_SEMANTIC];
@@ -455,12 +471,13 @@ export class ContextEngine {
     const keywordResults = this.recallKeyword(query, fetchLimit, layers, filter);
 
     // Ranker 2: Semantic (vector cosine) — only L3 contributes semantic scores.
-    // v0.8: Use recallPrefiltered() so the vector scan is bounded to the
-    // BM25 candidate pool instead of the entire L3 table.
+    // v0.8: Use recallAccelerated() so we automatically use the sqlite-vec
+    // ANN path when the extension is installed, and fall back to the
+    // BM25-prefiltered cosine path otherwise. Both are bounded-cost.
     const semanticResults: RankedMemory[] = [];
     if (layers.includes(MemoryLayer.L3_SEMANTIC)) {
       try {
-        const l3Results = await this.l3.recallPrefiltered(query, fetchLimit);
+        const l3Results = await this.l3.recallAccelerated(query, fetchLimit);
         for (const r of l3Results) {
           if (this.matchesFilter(r, filter)) {
             semanticResults.push({ ...r, layer: MemoryLayer.L3_SEMANTIC });
@@ -557,6 +574,7 @@ export class ContextEngine {
    * Promote memory up layers (L1→L2, L2→L3)
    */
   async promote(memoryId: string, fromLayer: MemoryLayer): Promise<Memory> {
+    this.ensureOpen('promote');
     let memory: Memory | undefined;
 
     // Get from source layer
@@ -604,6 +622,7 @@ export class ContextEngine {
    * Demote memory down layers (for archiving)
    */
   async demote(memoryId: string, fromLayer: MemoryLayer): Promise<void> {
+    this.ensureOpen('demote');
     switch (fromLayer) {
       case MemoryLayer.L1_WORKING:
         this.l1.touch(memoryId); // L1 demote = touch only, not delete
@@ -657,6 +676,7 @@ export class ContextEngine {
    * Summarize old memories in a layer
    */
   async summarize(layer: MemoryLayer, olderThanDays: number): Promise<SummaryResult> {
+    this.ensureOpen('summarize');
     if (layer === MemoryLayer.L1_WORKING) {
       throw new Error('Cannot summarize L1 - memories are ephemeral');
     }
@@ -771,6 +791,7 @@ export class ContextEngine {
    * Returns the memory and the layer it was found in, or null.
    */
   async getMemory(id: string): Promise<{ memory: Memory; layer: MemoryLayer } | null> {
+    this.ensureOpen('getMemory');
     // L1
     const l1 = this.l1.get(id);
     if (l1) return { memory: l1, layer: MemoryLayer.L1_WORKING };
@@ -791,6 +812,7 @@ export class ContextEngine {
    * L3 re-embeds only if content changed.
    */
   async updateMemory(id: string, updates: { content?: string; metadata?: Record<string, unknown>; tags?: string[]; pinned?: boolean }): Promise<{ memory: Memory; layer: MemoryLayer }> {
+    this.ensureOpen('updateMemory');
     const found = await this.getMemory(id);
     if (!found) throw new Error(`Memory not found: ${id}`);
 
@@ -820,6 +842,7 @@ export class ContextEngine {
    * Throws if not found.
    */
   async deleteMemory(id: string): Promise<{ deletedFrom: MemoryLayer }> {
+    this.ensureOpen('deleteMemory');
     // L1
     if (this.l1.get(id)) {
       this.l1.delete(id);
@@ -841,6 +864,7 @@ export class ContextEngine {
    * List memories with optional filters. Defaults to L2.
    */
   async listMemories(options: ListMemoriesOptions = {}): Promise<{ memories: Memory[]; total: number }> {
+    this.ensureOpen('listMemories');
     const layer = options.layer ?? MemoryLayer.L2_PROJECT;
     const limit = options.limit ?? 20;
     const offset = options.offset ?? 0;
