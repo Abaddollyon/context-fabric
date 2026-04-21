@@ -29,7 +29,7 @@ import { TimeService } from "./time.js";
 // Tool Schemas (Zod)
 // ============================================================================
 
-const StoreMemorySchema = z.object({
+export const StoreMemorySchema = z.object({
   type: z.enum(["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"]),
   layer: z.number().int().min(1).max(3).optional(),
   content: z.string().min(1),
@@ -57,9 +57,9 @@ const StoreMemorySchema = z.object({
   pinned: z.boolean().optional()
     .describe('Pin this memory to protect it from decay and summarization. Pinned memories are never automatically deleted.'),
   ttl: z.number().int().positive().optional(),
-});
+}).strict();
 
-const RecallSchema = z.object({
+export const RecallSchema = z.object({
   query: z.string().min(1),
   limit: z.number().int().positive().default(10),
   threshold: z.number().min(0).max(1).default(0.7),
@@ -72,9 +72,9 @@ const RecallSchema = z.object({
     projectPath: z.string().optional(),
   }).optional(),
   sessionId: z.string().optional(),
-});
+}).strict();
 
-const GetCurrentContextSchema = z.object({
+export const GetCurrentContextSchema = z.object({
   sessionId: z.string().optional(),
   currentFile: z.string().optional(),
   currentCommand: z.string().optional(),
@@ -83,9 +83,9 @@ const GetCurrentContextSchema = z.object({
     .describe("Filter patterns by language (e.g. 'typescript', 'python')."),
   filePath: z.string().optional()
     .describe("Filter patterns by file path."),
-});
+}).strict();
 
-const SummarizeSchema = z.object({
+export const SummarizeSchema = z.object({
   sessionId: z.string().optional(),
   layer: z.number().int().min(2).max(3).default(2),
   olderThanDays: z.number().int().positive().default(30),
@@ -97,10 +97,10 @@ const SummarizeSchema = z.object({
     includeDecisions: z.boolean().default(true),
   }).optional(),
   projectPath: z.string().optional(),
-});
+}).strict();
 
 
-const ReportEventSchema = z.object({
+export const ReportEventSchema = z.object({
   event: z.object({
     type: z.enum([
       "file_opened",
@@ -118,26 +118,26 @@ const ReportEventSchema = z.object({
     cliType: z.enum(["kimi", "claude", "claude-code", "opencode", "codex", "gemini", "cursor", "generic"]),
     projectPath: z.string().optional(),
   }),
-});
+}).strict();
 
 
-const OrientSchema = z.object({
+export const OrientSchema = z.object({
   timezone: z.string().optional(),
   projectPath: z.string().optional(),
   expression: z.string().optional()
     .describe("Optional date expression to resolve: 'now', 'today', 'yesterday', 'tomorrow', 'start of day', 'end of day', 'start of week', 'end of week', 'start of next week', 'next Monday' … 'next Sunday', 'last Monday' … 'last Sunday', an ISO date string, or an epoch-ms number."),
   also: z.array(z.string()).optional()
     .describe("Additional IANA timezone names to show the same moment in (world clock)."),
-});
+}).strict();
 
-const SetupSchema = z.object({
+export const SetupSchema = z.object({
   cli: z.enum(["opencode", "claude", "claude-code", "kimi", "codex", "gemini", "cursor", "docker", "generic"]),
   serverPath: z.string().optional(),
   useDocker: z.boolean().default(false),
   preview: z.boolean().default(false),
-});
+}).strict();
 
-const SearchCodeSchema = z.object({
+export const SearchCodeSchema = z.object({
   query: z.string().min(1),
   mode: z.enum(["text", "symbol", "semantic"]).default("semantic"),
   language: z.string().optional(),
@@ -147,14 +147,14 @@ const SearchCodeSchema = z.object({
   threshold: z.number().min(0).max(1).default(0.5),
   includeContent: z.boolean().default(true),
   projectPath: z.string().optional(),
-});
+}).strict();
 
-const GetMemorySchema = z.object({
+export const GetMemorySchema = z.object({
   memoryId: z.string().min(1),
   projectPath: z.string().optional(),
-});
+}).strict();
 
-const UpdateMemorySchema = z.object({
+export const UpdateMemorySchema = z.object({
   memoryId: z.string().min(1),
   content: z.string().optional(),
   metadata: z.preprocess(v => typeof v === 'string' ? JSON.parse(v) : v, z.record(z.unknown()).optional()),
@@ -166,7 +166,7 @@ const UpdateMemorySchema = z.object({
   targetLayer: z.number().int().min(2).max(3).optional()
     .describe('Promote memory to this layer (2=project, 3=semantic). Triggers promote logic: copies to new layer and deletes from old. Cannot be combined with content/metadata/tags/weight/pinned.'),
   projectPath: z.string().optional(),
-}).refine(
+}).strict().refine(
   (data) => {
     if (data.targetLayer === undefined) return true;
     return data.content === undefined && data.metadata === undefined
@@ -176,12 +176,12 @@ const UpdateMemorySchema = z.object({
   { message: 'targetLayer (promote) cannot be combined with content/metadata/tags/weight/pinned updates. Use separate calls.' }
 );
 
-const DeleteMemorySchema = z.object({
+export const DeleteMemorySchema = z.object({
   memoryId: z.string().min(1),
   projectPath: z.string().optional(),
-});
+}).strict();
 
-const ListMemoriesSchema = z.object({
+export const ListMemoriesSchema = z.object({
   layer: z.number().int().min(1).max(3).optional(),
   type: z.enum(["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"]).optional(),
   tags: z.array(z.string()).optional(),
@@ -190,12 +190,12 @@ const ListMemoriesSchema = z.object({
   stats: z.preprocess(v => typeof v === 'string' ? v === 'true' : v, z.boolean().optional())
     .describe('If true, return memory store summary (counts per layer, pinned counts, L2 breakdown by type) instead of listing memories.'),
   projectPath: z.string().optional(),
-});
+}).strict();
 
-const BackupSchema = z.object({
+export const BackupSchema = z.object({
   destDir: z.string().min(1).describe('Absolute directory path to write backup files into. Created if missing.'),
   projectPath: z.string().optional(),
-});
+}).strict();
 
 
 // ============================================================================
