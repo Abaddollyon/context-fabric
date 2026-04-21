@@ -978,6 +978,95 @@ export class ContextEngine {
     return results;
   }
 
+  /**
+   * v0.9: Export L1/L2/L3 memories to a JSON Lines file. One memory per line.
+   * Layer 1 memories are ephemeral and included only for session snapshots.
+   * Embeddings are omitted (the importer will recompute them via store()).
+   */
+  async exportMemories(
+    destPath: string,
+    options: { layers?: MemoryLayer[] } = {},
+  ): Promise<{ path: string; count: number; bytes: number }> {
+    const { writeFileSync, statSync } = await import('node:fs');
+    const { dirname } = await import('node:path');
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(dirname(destPath), { recursive: true });
+
+    const layers = options.layers ?? [MemoryLayer.L2_PROJECT, MemoryLayer.L3_SEMANTIC];
+    const lines: string[] = [];
+
+    if (layers.includes(MemoryLayer.L1_WORKING)) {
+      for (const m of this.l1.getAll()) {
+        lines.push(JSON.stringify({ ...m, layer: MemoryLayer.L1_WORKING, embedding: undefined }));
+      }
+    }
+    if (layers.includes(MemoryLayer.L2_PROJECT)) {
+      const all = await this.l2.getAll(100000, 0);
+      for (const m of all) {
+        lines.push(JSON.stringify({ ...m, layer: MemoryLayer.L2_PROJECT, embedding: undefined }));
+      }
+    }
+    if (layers.includes(MemoryLayer.L3_SEMANTIC)) {
+      const all = await this.l3.getAll(100000, 0);
+      for (const m of all) {
+        lines.push(JSON.stringify({ ...m, layer: MemoryLayer.L3_SEMANTIC, embedding: undefined }));
+      }
+    }
+
+    const body = lines.length > 0 ? lines.join('\n') + '\n' : '';
+    writeFileSync(destPath, body, 'utf8');
+    const bytes = statSync(destPath).size;
+    return { path: destPath, count: lines.length, bytes };
+  }
+
+  /**
+   * v0.9: Import memories from a JSON Lines file produced by exportMemories().
+   * Each line is parsed and re-stored via engine.store(), which recomputes
+   * embeddings for L3 entries. Invalid lines are collected into `errors`.
+   */
+  async importMemories(
+    srcPath: string,
+  ): Promise<{ imported: number; skipped: number; errors: Array<{ line: number; error: string }> }> {
+    const { readFileSync } = await import('node:fs');
+    const raw = readFileSync(srcPath, 'utf8');
+    const lines = raw.split('\n').filter(l => l.trim().length > 0);
+
+    let imported = 0;
+    let skipped = 0;
+    const errors: Array<{ line: number; error: string }> = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      try {
+        const obj = JSON.parse(lines[i]!) as {
+          content?: string;
+          type?: string;
+          layer?: number;
+          metadata?: object;
+          tags?: string[];
+          pinned?: boolean;
+        };
+        if (typeof obj.content !== 'string' || typeof obj.type !== 'string') {
+          skipped++;
+          continue;
+        }
+        await this.store(obj.content, obj.type as import('./types.js').MemoryType, {
+          layer: (obj.layer ?? MemoryLayer.L2_PROJECT) as MemoryLayer,
+          metadata: obj.metadata as Record<string, unknown> | undefined,
+          tags: obj.tags,
+          pinned: obj.pinned,
+        });
+        imported++;
+      } catch (err) {
+        errors.push({
+          line: i + 1,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return { imported, skipped, errors };
+  }
+
   // ============================================================================
   // Private Helpers
   // ============================================================================

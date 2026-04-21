@@ -17,6 +17,8 @@ import { initialize, getConfig } from "./config.js";
 import { ContextEngine } from "./engine.js";
 import { setupForCLI, previewConfig, type SupportedCLI } from "./setup.js";
 import { ShutdownController } from "./shutdown.js";
+import { toErrorPayload, ToolError } from "./errors.js";
+import { VERSION } from "./version.js";
 import {
   MemoryLayer,
   MemoryType,
@@ -196,6 +198,46 @@ export const ListMemoriesSchema = z.object({
 
 export const BackupSchema = z.object({
   destDir: z.string().min(1).describe('Absolute directory path to write backup files into. Created if missing.'),
+  projectPath: z.string().optional(),
+}).strict();
+
+// v0.9: batch store — reduces MCP round-trips for bulk imports.
+// Each item has the same shape as StoreMemorySchema minus the schema wrapper.
+const StoreItemSchema = z.object({
+  type: z.enum(["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"]),
+  layer: z.number().int().min(1).max(3).optional(),
+  content: z.string().min(1),
+  metadata: z.object({
+    title: z.string().optional(),
+    tags: z.array(z.string()).default([]),
+    confidence: z.number().min(0).max(1).default(0.8),
+    source: z.enum(["user_explicit", "ai_inferred", "system_auto"]).default("ai_inferred"),
+    projectPath: z.string().optional(),
+    cliType: z.string().default("generic"),
+    weight: z.number().int().min(1).max(5).default(3),
+  }),
+  pinned: z.boolean().optional(),
+  ttl: z.number().int().positive().optional(),
+});
+
+export const StoreBatchSchema = z.object({
+  items: z.array(StoreItemSchema).min(1).max(500)
+    .describe('Array of memory items to store in one call. Max 500 per batch.'),
+  projectPath: z.string().optional()
+    .describe('Default projectPath used for items that omit their own metadata.projectPath.'),
+}).strict();
+
+export const ExportSchema = z.object({
+  destPath: z.string().min(1)
+    .describe('Absolute path to the .jsonl file to write. Parent dirs are created.'),
+  layers: z.array(z.number().int().min(1).max(3)).optional()
+    .describe('Layers to export. Default: [2, 3]. Pass [1,2,3] to include ephemeral L1.'),
+  projectPath: z.string().optional(),
+}).strict();
+
+export const ImportSchema = z.object({
+  srcPath: z.string().min(1)
+    .describe('Absolute path to a .jsonl file produced by context.export.'),
   projectPath: z.string().optional(),
 }).strict();
 
@@ -505,6 +547,58 @@ const TOOLS: Tool[] = [
         projectPath: { type: "string", description: "Project path whose L2 layer is backed up. Defaults to the current working directory." },
       },
       required: ["destDir"],
+    },
+  },
+  {
+    name: "context.storeBatch",
+    description: "Store multiple memories in a single call (up to 500). Functionally equivalent to calling context.store N times but avoids MCP round-trip overhead. Use for bulk imports, session dumps, or context.import transformations.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          maxItems: 500,
+          items: {
+            type: "object",
+            properties: {
+              type: { type: "string", enum: ["code_pattern", "bug_fix", "decision", "convention", "scratchpad", "relationship"] },
+              layer: { type: "number", minimum: 1, maximum: 3 },
+              content: { type: "string" },
+              metadata: { type: "object" },
+              pinned: { type: "boolean" },
+              ttl: { type: "number" },
+            },
+            required: ["type", "content", "metadata"],
+          },
+        },
+        projectPath: { type: "string", description: "Default projectPath for items that omit metadata.projectPath." },
+      },
+      required: ["items"],
+    },
+  },
+  {
+    name: "context.export",
+    description: "Export L2 (project) and L3 (semantic) memories to a JSON Lines file. Embeddings are omitted; the importer will recompute them. Useful for backup, migration, and cross-project sharing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        destPath: { type: "string", description: "Absolute path to the .jsonl file to write. Parent dirs are created." },
+        layers: { type: "array", items: { type: "number", minimum: 1, maximum: 3 }, description: "Layers to export. Default [2, 3]." },
+        projectPath: { type: "string" },
+      },
+      required: ["destPath"],
+    },
+  },
+  {
+    name: "context.import",
+    description: "Import memories from a JSON Lines file produced by context.export. Each valid line is re-stored via the normal store path (L3 entries are re-embedded).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        srcPath: { type: "string", description: "Absolute path to a .jsonl file." },
+        projectPath: { type: "string" },
+      },
+      required: ["srcPath"],
     },
   },
 ];
@@ -931,6 +1025,54 @@ async function handleBackup(args: unknown): Promise<unknown> {
   };
 }
 
+async function handleStoreBatch(args: unknown): Promise<unknown> {
+  const params = StoreBatchSchema.parse(args);
+  const results: Array<{ id: string; layer: MemoryLayer; pinned: boolean }> = [];
+  const errors: Array<{ index: number; error: string }> = [];
+
+  for (let i = 0; i < params.items.length; i++) {
+    const item = params.items[i]!;
+    const projectPath = item.metadata.projectPath ?? params.projectPath;
+    const engine = getEngine(projectPath);
+    try {
+      const memory = await engine.store(item.content, item.type, {
+        layer: item.layer,
+        metadata: item.metadata,
+        tags: item.metadata.tags,
+        ttl: item.ttl,
+        pinned: item.pinned,
+      });
+      results.push({
+        id: memory.id,
+        layer: memory.layer ?? MemoryLayer.L2_PROJECT,
+        pinned: memory.pinned ?? false,
+      });
+    } catch (err) {
+      errors.push({ index: i, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  return {
+    stored: results.length,
+    failed: errors.length,
+    results,
+    ...(errors.length > 0 ? { errors } : {}),
+  };
+}
+
+async function handleExport(args: unknown): Promise<unknown> {
+  const params = ExportSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  const layers = params.layers?.map(l => l as MemoryLayer);
+  return engine.exportMemories(params.destPath, layers ? { layers } : {});
+}
+
+async function handleImport(args: unknown): Promise<unknown> {
+  const params = ImportSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  return engine.importMemories(params.srcPath);
+}
+
 
 // ============================================================================
 // Server Setup
@@ -940,7 +1082,7 @@ async function createServer(): Promise<Server> {
   const server = new Server(
     {
       name: "context-fabric",
-      version: "0.8.0",
+      version: VERSION,
     },
     {
       capabilities: {
@@ -963,9 +1105,11 @@ async function createServer(): Promise<Server> {
     try {
       shutdown.begin();
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const payload = toErrorPayload(
+        err instanceof Error ? new ToolError('SHUTTING_DOWN', err.message) : err,
+      );
       return {
-        content: [{ type: "text", text: JSON.stringify({ error: message }) }],
+        content: [{ type: "text", text: JSON.stringify(payload) }],
         isError: true,
       };
     }
@@ -1013,8 +1157,17 @@ async function createServer(): Promise<Server> {
         case "context.backup":
           result = await handleBackup(args);
           break;
+        case "context.storeBatch":
+          result = await handleStoreBatch(args);
+          break;
+        case "context.export":
+          result = await handleExport(args);
+          break;
+        case "context.import":
+          result = await handleImport(args);
+          break;
         default:
-          throw new Error(`Unknown tool: ${name}`);
+          throw new ToolError('UNKNOWN_TOOL', `Unknown tool: ${name}`);
       }
 
       return {
@@ -1026,14 +1179,14 @@ async function createServer(): Promise<Server> {
         ],
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[ContextFabric] Error handling ${name}:`, message);
-      
+      const payload = toErrorPayload(error);
+      console.error(`[ContextFabric] Error handling ${name}:`, payload.code, payload.error);
+
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify({ error: message }),
+            text: JSON.stringify(payload),
           },
         ],
         isError: true,
