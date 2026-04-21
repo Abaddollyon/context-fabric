@@ -74,6 +74,9 @@ export class SemanticMemoryLayer {
   private stmtSetPinned!: StatementSync;
   private stmtCountPinned!: StatementSync;
   private stmtSearchBM25!: StatementSync;
+  /** Cached prepared statements for tag queries, keyed by tag arity. */
+  private stmtFindByTagsCache = new Map<number, StatementSync>();
+  private stmtCountByTagsCache = new Map<number, StatementSync>();
 
   constructor(options: SemanticMemoryOptions = {}) {
     this.decayDays = options.decayDays ?? 14;
@@ -107,12 +110,22 @@ export class SemanticMemoryLayer {
 
   /**
    * v0.8: one-time backfill of the vec0 table from semantic_memories on
-   * startup. Cheap when already populated (INSERT OR REPLACE is idempotent
-   * via the rowid pk) and lets existing DBs opt in to vec acceleration
-   * just by installing the sqlite-vec package.
+   * startup. Cheap when already populated — we short-circuit when vec_items
+   * count matches the semantic_memories count so existing DBs don't pay
+   * the read+parse cost on every constructor call.
    */
   private backfillVecIndex(): void {
     if (!this.vec.loaded) return;
+
+    // Skip if vec_items is already in sync with semantic_memories.
+    try {
+      const semCount = (this.db.prepare('SELECT COUNT(*) as c FROM semantic_memories').get() as { c: number }).c;
+      const vecCount = (this.db.prepare('SELECT COUNT(*) as c FROM vec_items').get() as { c: number }).c;
+      if (semCount === vecCount) return;
+    } catch {
+      /* counts query failed — fall through to full backfill */
+    }
+
     const rows = this.db.prepare('SELECT rowid, embedding FROM semantic_memories').all() as Array<{
       rowid: number;
       embedding: string;
@@ -492,48 +505,70 @@ export class SemanticMemoryLayer {
    * Apply time-based decay to all memories. Memories whose relevance score
    * drops below decayThreshold (default 0.2) are permanently deleted.
    * Returns the number of memories evaluated.
+   *
+   * Perf: score computation still happens in JS (stays faithful to the
+   * existing curve), but we fetch only the columns we need and wrap
+   * all writes in a single transaction so N rows cost one WAL fsync
+   * instead of N.
    */
   async applyDecay(): Promise<number> {
-    const rows = this.stmtGetAll.all() as unknown as DbRow[];
+    const rows = this.db.prepare(
+      'SELECT id, created_at, accessed_at, access_count, relevance_score, pinned FROM semantic_memories'
+    ).all() as Array<{
+      id: string;
+      created_at: number;
+      accessed_at: number;
+      access_count: number;
+      relevance_score: number;
+      pinned: number;
+    }>;
     if (rows.length === 0) return 0;
 
     const now = Date.now();
     const decayMs = this.decayDays * 24 * 60 * 60 * 1000;
     let affectedCount = 0;
 
-    for (const row of rows) {
-      if (row.pinned === 1) continue; // pinned memories are exempt from decay
+    this.db.exec('BEGIN');
+    try {
+      for (const row of rows) {
+        if (row.pinned === 1) continue; // pinned memories are exempt from decay
 
-      const age = now - row.created_at;
-      const timeSinceAccess = now - row.accessed_at;
+        const age = now - row.created_at;
+        const timeSinceAccess = now - row.accessed_at;
 
-      const ageDecay = Math.exp(-age / (decayMs * 2));
-      const accessBoost = Math.min(row.access_count / 10, 0.5);
-      const inactivityPenalty = Math.exp(-timeSinceAccess / decayMs);
-      const newScore = Math.max(0, (ageDecay * 0.3 + inactivityPenalty * 0.7) + accessBoost);
+        const ageDecay = Math.exp(-age / (decayMs * 2));
+        const accessBoost = Math.min(row.access_count / 10, 0.5);
+        const inactivityPenalty = Math.exp(-timeSinceAccess / decayMs);
+        const newScore = Math.max(0, (ageDecay * 0.3 + inactivityPenalty * 0.7) + accessBoost);
 
-      if (newScore < this.decayThreshold) {
-        this.stmtDelete.run(row.id);
-      } else if (Math.abs(newScore - row.relevance_score) > 0.01) {
-        this.stmtUpdateScore.run(newScore, now, row.id);
+        if (newScore < this.decayThreshold) {
+          this.stmtDelete.run(row.id);
+        } else if (Math.abs(newScore - row.relevance_score) > 0.01) {
+          this.stmtUpdateScore.run(newScore, now, row.id);
+        }
+
+        affectedCount++;
       }
-
-      affectedCount++;
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try { this.db.exec('ROLLBACK'); } catch { /* ignore */ }
+      throw err;
     }
 
     return affectedCount;
   }
 
   async delete(id: string): Promise<boolean> {
-    const existing = this.stmtGetById.get(id) as { rowid: number } | undefined;
-    if (!existing) return false;
-    // Capture rowid before the delete so we can clean the vec0 mirror.
-    const rowidRow = this.db.prepare('SELECT rowid FROM semantic_memories WHERE id = ?').get(id) as
+    // Single SELECT for both existence and rowid (vec0 cleanup).
+    // Previously this ran two overlapping SELECTs, the second of which
+    // always succeeded by the time the first had.
+    const row = this.db.prepare('SELECT rowid FROM semantic_memories WHERE id = ?').get(id) as
       | { rowid: number }
       | undefined;
+    if (!row) return false;
     this.stmtDelete.run(id);
-    if (this.vec.loaded && rowidRow) {
-      try { this.vec.remove(rowidRow.rowid); } catch { /* non-fatal */ }
+    if (this.vec.loaded) {
+      try { this.vec.remove(row.rowid); } catch { /* non-fatal */ }
     }
     return true;
   }
@@ -624,15 +659,17 @@ export class SemanticMemoryLayer {
   findByTags(tags: string[], limit: number, offset: number): Memory[] {
     if (tags.length === 0) return [];
 
-    // semantic_memories stores tags as a JSON array in the tags column.
-    // Build a WHERE clause that checks for each tag with JSON_EACH.
-    const conditions = tags.map(() => `EXISTS (SELECT 1 FROM json_each(sm.tags) WHERE json_each.value = ?)`).join(' OR ');
-    const stmt = this.db.prepare(`
-      SELECT sm.* FROM semantic_memories sm
-      WHERE ${conditions}
-      ORDER BY sm.relevance_score DESC
-      LIMIT ? OFFSET ?
-    `);
+    let stmt = this.stmtFindByTagsCache.get(tags.length);
+    if (!stmt) {
+      const conditions = tags.map(() => `EXISTS (SELECT 1 FROM json_each(sm.tags) WHERE json_each.value = ?)`).join(' OR ');
+      stmt = this.db.prepare(`
+        SELECT sm.* FROM semantic_memories sm
+        WHERE ${conditions}
+        ORDER BY sm.relevance_score DESC
+        LIMIT ? OFFSET ?
+      `);
+      this.stmtFindByTagsCache.set(tags.length, stmt);
+    }
 
     const rows = stmt.all(...tags, limit, offset) as unknown as DbRow[];
     return rows.map(row => this.rowToMemory(row));
@@ -648,11 +685,15 @@ export class SemanticMemoryLayer {
   countByTags(tags: string[]): number {
     if (tags.length === 0) return 0;
 
-    const conditions = tags.map(() => `EXISTS (SELECT 1 FROM json_each(sm.tags) WHERE json_each.value = ?)`).join(' OR ');
-    const stmt = this.db.prepare(`
-      SELECT COUNT(*) as count FROM semantic_memories sm
-      WHERE ${conditions}
-    `);
+    let stmt = this.stmtCountByTagsCache.get(tags.length);
+    if (!stmt) {
+      const conditions = tags.map(() => `EXISTS (SELECT 1 FROM json_each(sm.tags) WHERE json_each.value = ?)`).join(' OR ');
+      stmt = this.db.prepare(`
+        SELECT COUNT(*) as count FROM semantic_memories sm
+        WHERE ${conditions}
+      `);
+      this.stmtCountByTagsCache.set(tags.length, stmt);
+    }
 
     const row = stmt.get(...tags) as { count: number } | undefined;
     return row?.count ?? 0;

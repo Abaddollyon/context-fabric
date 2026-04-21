@@ -4,6 +4,36 @@ import { FlagEmbedding, EmbeddingModel } from 'fastembed';
 
 const MAX_CACHE_SIZE = 10_000;
 
+/**
+ * Process-wide cache of loaded ONNX models keyed by `${modelName}|${cacheDir}`.
+ *
+ * The ONNX runtime load is the single heaviest cost in the server (~250ms
+ * cold + ~80ms model tensor parse). Previously every `SemanticMemoryLayer`
+ * instance created its own `EmbeddingService`, which loaded the model from
+ * scratch — with 37 test files × ~2 layer instantiations per file, that was
+ * ~20s of avoidable model init per full test run. Sharing the handle is
+ * safe because `FlagEmbedding.embed()` is stateless w.r.t. prior calls.
+ *
+ * Each `EmbeddingService` still keeps its own per-instance text→vector
+ * cache so test isolation on the caching layer is preserved.
+ */
+const modelCache = new Map<string, Promise<FlagEmbedding>>();
+
+function getOrLoadModel(
+  modelName: EmbeddingModel,
+  cacheDir: string | undefined,
+): Promise<FlagEmbedding> {
+  const key = `${modelName}|${cacheDir ?? ''}`;
+  let p = modelCache.get(key);
+  if (!p) {
+    p = FlagEmbedding.init({ model: modelName, cacheDir });
+    modelCache.set(key, p);
+    // On failure, drop the rejected promise so the next caller can retry.
+    p.catch(() => modelCache.delete(key));
+  }
+  return p;
+}
+
 export class EmbeddingService {
   private model: FlagEmbedding | null = null;
   private cache: Map<string, number[]> = new Map();
@@ -52,8 +82,10 @@ export class EmbeddingService {
       // FASTEMBED_CACHE_PATH lets Docker point to the baked-in model,
       // falling back to fastembed's own default cache when running locally.
       const cacheDir = process.env.FASTEMBED_CACHE_PATH || undefined;
+      // Share the loaded model across all EmbeddingService instances in
+      // the process. See the modelCache comment in this file for rationale.
       this.model = await this.withTimeout(
-        FlagEmbedding.init({ model: this.modelName, cacheDir }),
+        getOrLoadModel(this.modelName, cacheDir),
         'model initialization'
       );
       this.initialized = true;
@@ -123,9 +155,11 @@ export class EmbeddingService {
   async embed(text: string): Promise<number[]> {
     await this.init();
 
-    // Check cache
+    // Check cache — true LRU: on hit, re-insert to bump recency.
     const cached = this.cache.get(text);
     if (cached) {
+      this.cache.delete(text);
+      this.cache.set(text, cached);
       return cached;
     }
 
@@ -170,6 +204,10 @@ export class EmbeddingService {
     for (let i = 0; i < texts.length; i++) {
       const cached = this.cache.get(texts[i]);
       if (cached) {
+        // True LRU: bump recency on hit so batch lookups don't shift
+        // hot entries toward eviction.
+        this.cache.delete(texts[i]);
+        this.cache.set(texts[i], cached);
         results[i] = cached;
       } else {
         uncachedTexts.push(texts[i]);

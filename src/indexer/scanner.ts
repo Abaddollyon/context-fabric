@@ -103,16 +103,35 @@ export function isIndexableExtension(filePath: string): boolean {
 // ============================================================================
 
 /**
+ * Cheap pre-check for a git repository. Accepts either a `.git` directory
+ * (ordinary clone) or a `.git` file (linked worktree). Avoids the cost of
+ * spawning `git ls-files` in non-git directories like tmp test dirs.
+ */
+function isGitRepo(projectPath: string): boolean {
+  try {
+    return existsSync(join(projectPath, '.git'));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Discover files in a project directory.
- * Tries `git ls-files` first, falls back to recursive readdir.
+ * Tries `git ls-files` first (when the directory is a git repo), falls back
+ * to recursive readdir. The pre-check avoids `execSync` failure noise in
+ * tmp / non-git test directories where the fallback is always taken.
  */
 export function discoverFiles(projectPath: string, maxFiles: number = 10_000): string[] {
   let files: string[];
 
-  try {
-    files = discoverViaGit(projectPath);
-  } catch (err) {
-    console.warn('[ContextFabric] git ls-files failed, falling back to readdir:', err);
+  if (isGitRepo(projectPath)) {
+    try {
+      files = discoverViaGit(projectPath);
+    } catch (err) {
+      console.warn('[ContextFabric] git ls-files failed, falling back to readdir:', err);
+      files = discoverViaReaddir(projectPath);
+    }
+  } else {
     files = discoverViaReaddir(projectPath);
   }
 
@@ -123,7 +142,7 @@ export function discoverFiles(projectPath: string, maxFiles: number = 10_000): s
 function discoverViaGit(projectPath: string): string[] {
   const stdout = execSync(
     'git ls-files --cached --others --exclude-standard -z',
-    { cwd: projectPath, maxBuffer: 10 * 1024 * 1024 },
+    { cwd: projectPath, maxBuffer: 10 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] },
   );
   return stdout.toString('utf-8').split('\0').filter(Boolean);
 }

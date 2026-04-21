@@ -36,5 +36,18 @@ export default defineConfig({
     teardownTimeout: 10000,
     maxConcurrency: 5,
     pool: 'forks',
+    poolOptions: {
+      forks: {
+        // Reuse worker processes across files to amortize v8 + onnx warmup.
+        // Each fork still isolates from the others, but we stop paying the
+        // per-file fork-spawn cost (~50-100ms each across 37 files).
+        singleFork: false,
+      },
+    },
+    // Skip the test-isolation reload between files in the same worker.
+    // Our tests use per-test tmp dirs + explicit engine/layer close(), so
+    // shared-module state (constants, schemas) is safe to keep across files
+    // and saves on module re-evaluation + esm graph re-import per file.
+    isolate: false,
   },
 });

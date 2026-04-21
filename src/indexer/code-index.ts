@@ -299,8 +299,16 @@ export class CodeIndex {
   // Indexing
   // ============================================================================
 
-  /** Re-index a single file. */
-  async reindexFile(relativePath: string): Promise<void> {
+  /**
+   * Re-index a single file.
+   *
+   * @param precomputed Optional hint from `incrementalUpdate`'s diff pass so
+   *   we don't re-stat / re-hash the file when the caller already did.
+   */
+  async reindexFile(
+    relativePath: string,
+    precomputed?: { hash?: string; mtimeMs?: number; sizeBytes?: number },
+  ): Promise<void> {
     const fullPath = join(this.projectPath, relativePath);
 
     if (!existsSync(fullPath)) {
@@ -318,19 +326,28 @@ export class CodeIndex {
     }
 
     const language = detectLanguage(relativePath);
-    const stat = statSync(fullPath);
-    const hash = createHash('sha256').update(content).digest('hex');
 
-    // Delete existing data for this file (chunks explicitly to fire FTS5 triggers; rest cascades)
-    this.deleteFileFromIndex(relativePath);
+    // Reuse the stat + hash from computeDiff when available. Avoids one
+    // statSync and one full-file SHA-256 pass per file in incrementalUpdate.
+    let mtimeMs: number;
+    let sizeBytes: number;
+    if (precomputed?.mtimeMs !== undefined && precomputed?.sizeBytes !== undefined) {
+      mtimeMs = precomputed.mtimeMs;
+      sizeBytes = precomputed.sizeBytes;
+    } else {
+      const stat = statSync(fullPath);
+      mtimeMs = stat.mtimeMs;
+      sizeBytes = stat.size;
+    }
+    const hash = precomputed?.hash ?? createHash('sha256').update(content).digest('hex');
 
-    // Extract symbols
+    // Extract symbols + chunk content outside the transaction (pure work).
     const symbols = extractSymbols(content, language);
-
-    // Chunk the file
     const chunks = this.chunkContent(content, relativePath, symbols);
 
-    // Embed chunks if embedding service available
+    // Embed chunks if embedding service available. Done outside the tx
+    // because embedBatch is async and we don't want to hold a write lock
+    // while awaiting ONNX.
     let embeddings: number[][] = [];
     if (this.embeddingService && chunks.length > 0) {
       try {
@@ -344,44 +361,56 @@ export class CodeIndex {
       embeddings = chunks.map(() => []);
     }
 
-    // Insert file
-    this.stmtInsertFile.run(
-      relativePath,
-      stat.mtimeMs,
-      stat.size,
-      language,
-      hash,
-      Date.now(),
-      chunks.length,
-    );
+    // Wrap delete + insert + symbol + chunk rows in one tx.
+    // Each loop iteration was previously an autocommit, meaning one WAL
+    // fsync per symbol and per chunk. Grouping them is ~10x cheaper for
+    // files with many symbols.
+    const now = Date.now();
+    this.db.exec('BEGIN');
+    try {
+      // Delete existing data for this file (chunks explicitly to fire FTS5 triggers; rest cascades)
+      this.stmtDeleteChunksByFile.run(relativePath);
+      this.stmtDeleteFile.run(relativePath);
 
-    // Insert symbols
-    for (const sym of symbols) {
-      this.stmtInsertSymbol.run(
+      this.stmtInsertFile.run(
         relativePath,
-        sym.name,
-        sym.kind,
-        sym.lineStart,
-        sym.lineEnd,
-        sym.signature,
-        sym.docComment,
+        mtimeMs,
+        sizeBytes,
+        language,
+        hash,
+        now,
+        chunks.length,
       );
-    }
 
-    // Insert chunks
-    for (let i = 0; i < chunks.length; i++) {
-      this.stmtInsertChunk.run(
-        relativePath,
-        i,
-        chunks[i].lineStart,
-        chunks[i].lineEnd,
-        chunks[i].content,
-        JSON.stringify(embeddings[i]),
-      );
-    }
+      for (const sym of symbols) {
+        this.stmtInsertSymbol.run(
+          relativePath,
+          sym.name,
+          sym.kind,
+          sym.lineStart,
+          sym.lineEnd,
+          sym.signature,
+          sym.docComment,
+        );
+      }
 
-    // Update last indexed timestamp
-    this.stmtSetMeta.run('last_indexed_at', String(Date.now()), Date.now());
+      for (let i = 0; i < chunks.length; i++) {
+        this.stmtInsertChunk.run(
+          relativePath,
+          i,
+          chunks[i].lineStart,
+          chunks[i].lineEnd,
+          chunks[i].content,
+          JSON.stringify(embeddings[i]),
+        );
+      }
+
+      this.stmtSetMeta.run('last_indexed_at', String(now), now);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try { this.db.exec('ROLLBACK'); } catch { /* ignore */ }
+      throw err;
+    }
   }
 
   /**
@@ -429,7 +458,11 @@ export class CodeIndex {
         const batch = toIndex.slice(i, i + batchSize);
 
         for (const d of batch) {
-          await this.reindexFile(d.path);
+          await this.reindexFile(d.path, {
+            hash: d.hash,
+            mtimeMs: d.mtimeMs,
+            sizeBytes: d.sizeBytes,
+          });
         }
 
         // Yield the event loop between batches
