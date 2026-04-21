@@ -2,16 +2,19 @@
 # https://smithery.ai/docs/registry/smithery-yaml
 
 name: context-fabric
-version: 0.7.1
+version: 0.12.0
 description: |
-  MCP server for agentic CLI memory and time-aware orientation. Provides semantic
-  context management across sessions with a three-layer memory architecture
-  (working, project, semantic), hybrid search (FTS5 BM25 + vector cosine + RRF),
-  and a built-in time engine with IANA timezone support, natural-language date
-  anchors, and offline-gap detection.
+  MCP server for agentic CLI memory and time-aware orientation. Provides a
+  three-layer memory architecture (working / project / semantic), hybrid
+  search (FTS5 BM25 + vector cosine + RRF, optionally accelerated by
+  sqlite-vec), bi-temporal reasoning with supersession, structured
+  provenance, cosine near-duplicate detection on store, procedural
+  memory ("skills"), MCP Resources and Prompts, a code index with
+  file-watching, and a built-in time engine with IANA timezone support.
 
-  Integrates with Kimi, Claude Code, OpenCode, Codex, Gemini CLI, Cursor, and more.
-  Runs locally (Node.js 22.5+) or via Docker (cross-platform, zero host dependencies).
+  Integrates with Kimi, Claude Code, OpenCode, Codex, Gemini CLI, Cursor,
+  and Claude Desktop. Fully local — no API keys required. Runs locally
+  (Node.js 22.5+) or via Docker (cross-platform, zero host dependencies).
 
 homepage: https://github.com/Abaddollyon/context-fabric
 license: MIT
@@ -41,12 +44,20 @@ commands:
     command: npm run build
 
   test:
-    description: Run test suite
+    description: Run test suite (719 tests)
     command: npm test
 
+  bench:recall:
+    description: Benchmark L3 recall latency (1K / 10K memories)
+    command: npm run bench:recall
+
+  bench:quality:
+    description: Measure recall@k and MRR against the golden query set
+    command: npm run bench:quality
+
 env:
-  - name: CONTEXT_FABRIC_DIR
-    description: Storage directory for L2/L3 databases
+  - name: CONTEXT_FABRIC_HOME
+    description: Root storage directory for L2/L3 databases and config.yaml
     default: ~/.context-fabric
     required: false
 
@@ -54,71 +65,136 @@ env:
     description: ONNX model cache directory (pre-set in Docker image)
     required: false
 
-  - name: LOG_LEVEL
-    description: Log level (debug, info, warn, error)
+  - name: CONTEXT_FABRIC_LOG_LEVEL
+    description: Log verbosity — debug, info, warn, error
     default: info
     required: false
 
+  - name: CONTEXT_FABRIC_DEFAULT_PROJECT
+    description: Project path used when a tool call omits projectPath
+    required: false
+
+  - name: CF_DISABLE_SQLITE_VEC
+    description: Set to "1" to force the FTS5 prefilter path even if sqlite-vec is installed
+    required: false
+
 tools:
-  - name: context.getCurrent
-    description: Get current context window for a session (working memories, relevant memories, patterns, suggestions, ghost messages). Supports language/filePath filters for patterns.
-
+  # Core memory operations
   - name: context.store
-    description: Store a memory — code pattern, bug fix, decision, convention, scratchpad, or relationship. SmartRouter auto-selects the layer.
-
+    description: Store a memory (auto-routed by SmartRouter). Supports provenance, dedup (skip/merge/allow), and bi-temporal supersedes.
+  - name: context.storeBatch
+    description: Store an array of memories in one call. Same options as context.store, applied per-item.
   - name: context.recall
-    description: "Hybrid search across all memory layers. Three modes: hybrid (FTS5+vector+RRF, default), semantic (vector-only), keyword (FTS5 BM25-only)."
-
-  - name: context.orient
-    description: "Orientation loop — answers: Where am I in time? What happened while I was offline? What project am I in? Also resolves date expressions and provides world-clock conversions."
-
-  - name: context.summarize
-    description: Condense old memories into a summary entry to keep context lean.
-
-  - name: context.reportEvent
-    description: Report CLI events (file opened, command executed, error occurred, etc.) for automatic memory capture.
-
-  - name: context.searchCode
-    description: Search the project's source code index. Supports text, symbol, and semantic search modes. Index is built automatically on first use.
-
+    description: Hybrid search (FTS5+vector+RRF, default), semantic (vector-only), or keyword (BM25-only). Supports asOf, includeSuperseded, offset pagination.
   - name: context.get
-    description: Get a specific memory by its ID. Searches across all layers (L1→L2→L3).
-
+    description: Get a specific memory by id; searches L1 -> L2 -> L3.
   - name: context.update
-    description: "Update an existing memory's content, metadata, tags, weight, or pinned status. Use targetLayer to promote to a higher layer (L1→L2, L2→L3)."
-
+    description: Update content, metadata, tags, weight, pinned, or promote across layers via targetLayer.
   - name: context.delete
-    description: Delete a memory by its ID. Searches across all layers and deletes from whichever layer it lives in.
-
+    description: Delete a memory by id from whichever layer it lives in.
   - name: context.list
-    description: "List and browse memories with optional filters (type, tags). Supports pagination. Use stats: true to get memory store counts per layer."
+    description: List and paginate memories by layer/type/tags. Use stats:true for per-layer counts.
+  - name: context.summarize
+    description: Roll up old memories in L2/L3 into a single summary entry.
 
+  # Orientation & time
+  - name: context.orient
+    description: "Session-start orientation: wall-clock time in a timezone, project path, offline-gap summary. Resolves date expressions and world-clock conversions."
+  - name: context.getCurrent
+    description: Current context window — working memories, relevant memories, patterns, suggestions, ghost messages.
+  - name: context.reportEvent
+    description: Report CLI events (file_opened, command_executed, error_occurred, ...) for auto-capture.
+
+  # Code index
+  - name: context.searchCode
+    description: Text / symbol / semantic search over the local source index (FTS5-prefiltered semantic mode). Built + kept fresh by a file watcher.
+
+  # Skills (v0.12 — procedural memory)
+  - name: context.skill.create
+    description: Create a skill (procedural memory) with slug, name, description, triggers, parameters, and an instructions body.
+  - name: context.skill.list
+    description: List skills, most-recently-used first, with optional search and trigger filter.
+  - name: context.skill.get
+    description: Fetch a skill by slug or id, with optional full instruction body.
+  - name: context.skill.invoke
+    description: Return a skill's instructions and record an invocation (updates invocationCount / lastInvokedAt).
+  - name: context.skill.update
+    description: Update a skill's name, description, triggers, parameters, or instructions.
+  - name: context.skill.delete
+    description: Delete a skill by slug or id.
+
+  # Docs & ops
+  - name: context.importDocs
+    description: Seed memories from CLAUDE.md / AGENTS.md / README.md / CHANGELOG.md / CONTRIBUTING.md / ARCHITECTURE.md. Tag-dedup idempotent.
+  - name: context.backup
+    description: Online backup of L2 and L3 to a destination directory via VACUUM INTO (no downtime).
+  - name: context.export
+    description: Export memories as JSONL for migration or sharing.
+  - name: context.import
+    description: Import memories from a JSONL export.
+  - name: context.metrics
+    description: Structured server metrics (tool call counts, p50/p95 latencies, per-layer sizes).
+  - name: context.health
+    description: Readiness check + version + per-layer status + integrity flags.
   - name: context.setup
-    description: Install and configure Context Fabric into any supported CLI's MCP config. Writes the config file automatically. Supports local (node) and Docker transports.
+    description: Install Context Fabric into any supported MCP client (Claude Code, Cursor, Codex, OpenCode, Gemini, Kimi, Claude Desktop).
+
+resources:
+  - uri: memory://skills
+    description: JSON list of every skill (id, slug, name, description, triggers, invocationCount, lastInvokedAt).
+  - uri: memory://recent
+    description: Recently-touched memories across all layers.
+  - uri: memory://conventions
+    description: Everything tagged "convention" — project coding/naming/style rules.
+  - uri: memory://decisions
+    description: Everything tagged "decision" — project architectural decisions (ADR-lite).
+  - uriTemplate: memory://skill/{slug}
+    description: A specific skill as Markdown (name, description, triggers, instruction body).
+  - uriTemplate: memory://memory/{id}
+    description: A specific memory by id as JSON.
+
+prompts:
+  - name: cf-orient
+    description: Session-start orientation. Calls context.orient and summarizes what changed while offline.
+  - name: cf-capture-decision
+    description: Template for capturing an architectural decision with rationale/alternatives/tradeoffs.
+  - name: cf-review-session
+    description: End-of-session review — what got done, what's blocked, what to promote to L3.
+  - name: cf-search-code
+    description: Wrap context.searchCode with sensible defaults and formatted output.
+  - name: cf-invoke-skill
+    description: Fetch a skill and follow its instructions.
 
 documentation:
   readme: README.md
 
   features:
-    - Three-layer memory architecture (L1 working/RAM, L2 project/SQLite, L3 semantic/SQLite+cosine)
-    - "Hybrid search: FTS5 BM25 + vector cosine similarity, fused with Reciprocal Rank Fusion (RRF)"
-    - Time engine with IANA timezone support, natural-language date anchors, offline-gap detection
-    - Orientation loop — session-start summary of time, project, and what changed while offline
-    - Automatic context injection via ghost messages (in getCurrent response)
-    - Semantic search with fastembed-js ONNX embeddings (all-MiniLM-L6-v2)
+    - Three-layer memory architecture (L1 in-memory / L2 SQLite per-project / L3 SQLite + vector, cross-project)
+    - "Hybrid search: FTS5 BM25 + vector cosine + Reciprocal Rank Fusion. FTS5 prefilter keeps recall <10ms p50 @ 10K memories."
+    - Optional sqlite-vec ANN acceleration (opt-in, clean FTS5 fallback)
+    - Bi-temporal memory — supersedes / supersededBy / validFrom / validUntil + asOf recall filter
+    - Provenance — structured citation block (sessionId, eventId, filePath, commitSha, sourceUrl, capturedAt)
+    - Dedup-on-store — cosine near-duplicate detection at L3 (skip / merge / allow)
+    - Skills — procedural memory agents can invoke (slug, triggers, parameters, instructions body)
+    - MCP Resources & Prompts — browseable context + slash-command workflows
+    - Time engine — IANA timezone support, natural-language date anchors, offline-gap detection
+    - Local code indexing — symbol extraction, FTS5 + vector over chunks, live file-watching
     - Pattern detection and storage
-    - Event-driven memory capture
     - Smart routing — auto-selects the optimal layer for each memory
-    - Memory weighting (1-5) for priority-based recall
-    - Pinned memories — exempt from decay and summarization
+    - Operational hardening — graceful shutdown with drain, WAL checkpoint on close, startup integrity check, explicit transactions on every multi-row write, VACUUM INTO backups
+    - Zero external dependencies — node:sqlite, in-process ONNX embeddings (bge-small-en, 384-d)
     - Self-installing — AI calls context.setup to configure any supported CLI
-    - Docker transport — cross-platform stdio bridge, no host runtime required
-    - Zero native dependencies — uses Node.js built-in node:sqlite
+
+embedding:
+  model: bge-small-en
+  dimension: 384
+  runtime: fastembed-js (ONNX, in-process, no API calls)
 
 tags:
   - mcp
   - memory
   - context
+  - skills
   - time
   - timezone
   - cli
@@ -128,9 +204,14 @@ tags:
   - docker
   - hybrid-search
   - fts5
+  - sqlite-vec
+  - bi-temporal
+  - provenance
+  - procedural-memory
 
 categories:
   - memory
   - context-management
   - developer-tools
   - time-management
+  - agent-infrastructure

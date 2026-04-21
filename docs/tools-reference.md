@@ -1,6 +1,6 @@
 # Tools Reference
 
-All 12 MCP tools with full parameter docs and example payloads. Your AI calls these automatically -- you rarely need to invoke them by hand.
+All 25 MCP tools with full parameter docs and example payloads. Your AI calls these automatically -- you rarely need to invoke them by hand.
 
 ## Table of Contents
 
@@ -8,6 +8,8 @@ All 12 MCP tools with full parameter docs and example payloads. Your AI calls th
   - [context.getCurrent](#contextgetcurrent)
   - [context.store](#contextstore)
   - [context.recall](#contextrecall)
+- [Batch Tools](#batch-tools)
+  - [context.storeBatch](#contextstorebatch)
 - [Orientation & Time](#orientation--time)
   - [context.orient](#contextorient)
 - [Code Tools](#code-tools)
@@ -20,8 +22,25 @@ All 12 MCP tools with full parameter docs and example payloads. Your AI calls th
 - [Management Tools](#management-tools)
   - [context.summarize](#contextsummarize)
   - [context.reportEvent](#contextreportevent)
+- [Skill Tools](#skill-tools)
+  - [context.skill.create](#contextskillcreate)
+  - [context.skill.list](#contextskilllist)
+  - [context.skill.get](#contextskillget)
+  - [context.skill.invoke](#contextskillinvoke)
+  - [context.skill.update](#contextskillupdate)
+  - [context.skill.delete](#contextskilldelete)
+- [Docs Tools](#docs-tools)
+  - [context.importDocs](#contextimportdocs)
+- [Backup & Migration](#backup--migration)
+  - [context.backup](#contextbackup)
+  - [context.export](#contextexport)
+  - [context.import](#contextimport)
+- [Observability](#observability)
+  - [context.metrics](#contextmetrics)
+  - [context.health](#contexthealth)
 - [Setup Tools](#setup-tools)
   - [context.setup](#contextsetup)
+- [Changes since v0.7.1](#changes-since-v071)
 
 ---
 
@@ -125,6 +144,9 @@ Store a new memory in the fabric. If `layer` is not specified, the Smart Router 
 | `fileContext` | object | No | `{ path, lineStart?, lineEnd?, language? }` |
 | `codeBlock` | object | No | `{ code, language, filePath? }` |
 | `weight` | number | No | Priority 1–5 (default 3). Higher weight surfaces memories above unweighted ones in recall and context window |
+| `provenance` | object | No | v0.11 citation block. Strict schema: `{ sessionId?, eventId?, toolCallId?, filePath?, lineStart?, lineEnd?, commitSha?, sourceUrl?, capturedAt? }`. `capturedAt` is auto-stamped when omitted. See [Memory Types > Provenance](memory-types.md#provenance-v011) |
+| `supersedes` | string (UUID) | No | v0.11 bi-temporal. ID of an L3 memory this one replaces. The predecessor's `valid_until` and the new row's `supersedes_id` are stamped atomically. L3 only |
+| `dedupe` | object | No | v0.11 dedup-on-store config (L3 only). `{ strategy?: 'skip' \| 'merge' \| 'allow', threshold?: number }`. Default strategy `skip`, threshold `0.95`. See [Memory Types > Dedup](memory-types.md#dedup-on-store-v011) |
 
 #### Example Request
 
@@ -152,6 +174,56 @@ Store a new memory in the fabric. If `layer` is not specified, the Smart Router 
 }
 ```
 
+#### Example Request (with provenance + dedupe)
+
+```json
+{
+  "type": "code_pattern",
+  "layer": 3,
+  "content": "Use Promise.allSettled for batch HTTP calls that may fail independently.",
+  "metadata": {
+    "tags": ["patterns", "http"],
+    "provenance": {
+      "sessionId": "sess-2026-04-21",
+      "filePath": "src/http/batch.ts",
+      "lineStart": 18,
+      "lineEnd": 34,
+      "commitSha": "abc1234"
+    },
+    "dedupe": { "strategy": "merge", "threshold": 0.92 }
+  }
+}
+```
+
+#### Example Response (dedup merge hit)
+
+```json
+{
+  "id": "existing-memory-uuid",
+  "success": true,
+  "layer": 3,
+  "_dedupe": {
+    "strategy": "merge",
+    "similarity": 0.97,
+    "existingId": "existing-memory-uuid"
+  }
+}
+```
+
+#### Example Request (supersede an older decision)
+
+```json
+{
+  "type": "decision",
+  "layer": 3,
+  "content": "Switch primary store from DynamoDB to Postgres (Oct 2026).",
+  "metadata": {
+    "tags": ["db", "architecture"],
+    "supersedes": "e3f1a2d4-0000-4000-8000-000000000001"
+  }
+}
+```
+
 ---
 
 ### context.recall
@@ -167,6 +239,9 @@ Hybrid search across all memory layers. Supports three modes: `hybrid` (default,
 | `limit` | number | No | Max results to return (default: `10`) |
 | `threshold` | number | No | Minimum similarity score, 0-1 (default: `0.7`) |
 | `mode` | string | No | Search mode: `hybrid`, `semantic`, or `keyword` (default: `hybrid`) |
+| `offset` | number | No | Skip the first N results. Combine with `limit` for pagination (default: `0`) |
+| `includeSuperseded` | boolean | No | v0.11 bi-temporal. Include L3 memories that have been superseded (default: `false`) |
+| `asOf` | number | No | v0.11 bi-temporal. Epoch ms. Query the state of memory as it existed at this point in time. Overrides the default "hide superseded" behavior with a full bi-temporal window |
 | `filter` | object | No | See filter fields below |
 
 **Filter fields:**
@@ -216,6 +291,18 @@ Hybrid search across all memory layers. Supports three modes: `hybrid` (default,
   "total": 1
 }
 ```
+
+#### Example Request (bi-temporal: state-of-knowledge on 2025-09-01)
+
+```json
+{
+  "query": "primary database choice",
+  "asOf": 1756684800000,
+  "limit": 5
+}
+```
+
+Returns the decision(s) that were currently-valid on 2025-09-01, even if they have since been superseded. See [Memory Types > Bi-temporal](memory-types.md#bi-temporal-reasoning-v011).
 
 ---
 
@@ -814,9 +901,431 @@ Install and configure Context Fabric into a CLI tool's MCP config. The AI calls 
 
 ---
 
-## Migration from v0.6 → v0.7.1
+## Batch Tools
 
-Five tools were consolidated into existing tools:
+### context.storeBatch
+
+Store up to 500 memories in a single call. Functionally equivalent to calling `context.store` N times but avoids MCP round-trip overhead. Useful for bulk imports, session dumps, and `context.import` transformations. Each item follows the same shape as `context.store` but the top-level envelope is:
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `items` | array | Yes | Array of memory items, max 500. Each item has `{ type, content, metadata, layer?, ttl?, pinned? }` — same as `context.store` |
+| `projectPath` | string | No | Default `projectPath` for items that omit `metadata.projectPath` |
+
+#### Example Request
+
+```json
+{
+  "items": [
+    {
+      "type": "convention",
+      "content": "Always log errors with the `errorId` field.",
+      "metadata": { "tags": ["logging"] }
+    },
+    {
+      "type": "decision",
+      "content": "Use Postgres for primary store.",
+      "metadata": { "tags": ["db"], "weight": 5 }
+    }
+  ],
+  "projectPath": "/home/user/myapp"
+}
+```
+
+#### Example Response
+
+```json
+{
+  "stored": 2,
+  "failed": 0,
+  "results": [
+    { "id": "<uuid1>", "layer": 2, "pinned": false },
+    { "id": "<uuid2>", "layer": 2, "pinned": false }
+  ]
+}
+```
+
+If any items fail validation or storage, they are reported under an `errors` array with `{ index, error }` entries. The batch is not transactional — successful items are kept even if later items fail.
+
+---
+
+## Skill Tools
+
+Skills are **procedural memory** — reusable instruction blocks agents invoke by slug. See [Skills](skills.md) for the full guide.
+
+### context.skill.create
+
+Register a new skill. Throws if the slug already exists.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `slug` | string | Yes | Unique kebab-case identifier. Must match `^[a-z0-9][a-z0-9-]*$`, 1–64 chars |
+| `name` | string | Yes | Human-readable title, 1–120 chars |
+| `description` | string | Yes | One-line purpose for listings, 1–500 chars |
+| `instructions` | string | Yes | The skill body — what the agent should do when invoked |
+| `triggers` | string[] | No | Natural-language phrases that hint when to reach for this skill |
+| `parameters` | object[] | No | Declared inputs: `[{ name, description?, required? }]` |
+| `tags` | string[] | No | Additional tags to attach |
+| `projectPath` | string | No | Project to store the skill in |
+
+#### Example Request
+
+```json
+{
+  "slug": "review-pr",
+  "name": "Review a pull request",
+  "description": "Standard PR review checklist.",
+  "triggers": ["pr", "review"],
+  "parameters": [{ "name": "prUrl", "required": true }],
+  "instructions": "1. Fetch the PR...\n2. Run tests...\n3. ..."
+}
+```
+
+#### Example Response
+
+```json
+{
+  "id": "<uuid>",
+  "slug": "review-pr",
+  "name": "Review a pull request",
+  "description": "Standard PR review checklist.",
+  "version": 1
+}
+```
+
+---
+
+### context.skill.list
+
+List every skill, sorted most-recently-invoked first, then alphabetically by slug.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `projectPath` | string | No | Project to list from |
+
+#### Example Response
+
+```json
+{
+  "skills": [
+    {
+      "id": "<uuid>",
+      "slug": "review-pr",
+      "name": "Review a pull request",
+      "description": "Standard PR review checklist.",
+      "version": 1,
+      "invocationCount": 12,
+      "lastInvokedAt": 1745200000000,
+      "triggers": ["pr", "review"]
+    }
+  ],
+  "count": 1
+}
+```
+
+---
+
+### context.skill.get
+
+Read a skill (including full `instructions`) **without** bumping `invocationCount`.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `slug` | string | Yes | Skill slug |
+| `projectPath` | string | No | |
+
+#### Example Response
+
+```json
+{
+  "id": "<uuid>",
+  "slug": "review-pr",
+  "name": "Review a pull request",
+  "description": "Standard PR review checklist.",
+  "instructions": "1. Fetch the PR...\n2. ...",
+  "triggers": ["pr", "review"],
+  "parameters": [{ "name": "prUrl", "required": true }],
+  "version": 1,
+  "invocationCount": 12,
+  "lastInvokedAt": 1745200000000
+}
+```
+
+---
+
+### context.skill.invoke
+
+Fetch a skill's instructions and **atomically bump `invocationCount` and `lastInvokedAt`**. This is what the agent should call when it's about to follow the skill.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `slug` | string | Yes | Skill slug |
+| `projectPath` | string | No | |
+
+#### Example Response
+
+```json
+{
+  "slug": "review-pr",
+  "name": "Review a pull request",
+  "description": "Standard PR review checklist.",
+  "instructions": "1. Fetch the PR...\n2. ...",
+  "parameters": [{ "name": "prUrl", "required": true }],
+  "version": 1,
+  "invocationCount": 13,
+  "lastInvokedAt": 1745200123456
+}
+```
+
+---
+
+### context.skill.update
+
+Partial update. At least one of `name`, `description`, `instructions`, `triggers`, `parameters` must be provided. If `name`, `description`, or `instructions` changes, `version` bumps.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `slug` | string | Yes | Skill slug |
+| `name` | string | No | New name |
+| `description` | string | No | New description |
+| `instructions` | string | No | New instructions body |
+| `triggers` | string[] | No | Replace triggers |
+| `parameters` | object[] | No | Replace parameters |
+| `projectPath` | string | No | |
+
+#### Example Response
+
+```json
+{
+  "id": "<uuid>",
+  "slug": "review-pr",
+  "name": "Review a pull request",
+  "description": "Standard PR review checklist.",
+  "version": 2
+}
+```
+
+---
+
+### context.skill.delete
+
+Delete a skill by slug.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `slug` | string | Yes | Skill slug |
+| `projectPath` | string | No | |
+
+#### Example Response
+
+```json
+{ "deleted": true, "slug": "review-pr" }
+```
+
+Returns `{ deleted: false }` if no skill with that slug existed.
+
+---
+
+## Docs Tools
+
+### context.importDocs
+
+Seed L2 memory from known onboarding docs. Scans the project for `CLAUDE.md`, `AGENTS.md`, `README.md`, `CHANGELOG.md`, `ROADMAP.md`, `CONTRIBUTING.md` (or an explicit `files` list), stores each as a pinned L2 memory with `provenance.filePath` set, and fingerprints the content via a `doc-import:<sha>` tag so re-running is idempotent.
+
+Type routing:
+- `CLAUDE.md`, `AGENTS.md`, `README.md`, `CONTRIBUTING.md` → `convention`
+- `CHANGELOG.md`, `ROADMAP.md` → `scratchpad`
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `projectPath` | string | No | Project root. Defaults to current engine's project |
+| `files` | string[] | No | Explicit files (absolute or relative to `projectPath`). Defaults to auto-discovery |
+| `maxChars` | number | No | Per-file character cap. Longer files are truncated with an explicit marker (default `50000`) |
+| `dryRun` | boolean | No | If `true`, return what would be imported without storing (default `false`) |
+
+#### Example Request
+
+```json
+{ "projectPath": "/home/user/myapp" }
+```
+
+#### Example Response
+
+```json
+{
+  "projectPath": "/home/user/myapp",
+  "imported": [
+    { "file": "CLAUDE.md", "id": "<uuid>", "bytes": 1840, "truncated": false, "status": "stored" },
+    { "file": "README.md", "id": "<uuid>", "bytes": 12030, "truncated": false, "status": "stored" },
+    { "file": "CHANGELOG.md", "bytes": 0, "truncated": false, "status": "skipped-missing" },
+    { "file": "AGENTS.md", "id": "<existing-id>", "bytes": 920, "truncated": false, "status": "skipped-duplicate" }
+  ],
+  "summary": { "total": 4, "stored": 2, "skipped": 2, "truncated": 0 },
+  "dryRun": false
+}
+```
+
+---
+
+## Backup & Migration
+
+### context.backup
+
+Create a consistent timestamped snapshot of L2 and L3 databases using SQLite `VACUUM INTO`. Safe to run while the server is in use. Two files are written to `destDir`: `l2-memory-<ts>.db` and `l3-semantic-<ts>.db`.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `destDir` | string | Yes | Absolute directory path. Created if missing |
+| `projectPath` | string | No | Project whose L2 is backed up |
+
+#### Example Response
+
+```json
+{
+  "destDir": "/home/user/backups/2026-04-21",
+  "files": [
+    { "path": "/home/user/backups/2026-04-21/l2-memory-1745235200000.db", "size": 2097152, "layer": 2 },
+    { "path": "/home/user/backups/2026-04-21/l3-semantic-1745235200000.db", "size": 4194304, "layer": 3 }
+  ],
+  "totalBytes": 6291456
+}
+```
+
+---
+
+### context.export
+
+Export L2 and L3 memories to a JSON Lines file. Embeddings are omitted; the importer will recompute them. One JSON object per line.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `destPath` | string | Yes | Absolute path to the `.jsonl` file. Parent dirs are created |
+| `layers` | number[] | No | Layers to export. Default `[2, 3]`. Pass `[1,2,3]` to include ephemeral L1 |
+| `projectPath` | string | No | |
+
+#### Example Response
+
+```json
+{
+  "destPath": "/home/user/exports/fabric-2026-04-21.jsonl",
+  "counts": { "l1": 0, "l2": 47, "l3": 62 },
+  "total": 109
+}
+```
+
+---
+
+### context.import
+
+Import memories from a JSON Lines file produced by `context.export`. Each valid line is re-stored via the normal store path (L3 entries are re-embedded).
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `srcPath` | string | Yes | Absolute path to a `.jsonl` file |
+| `projectPath` | string | No | |
+
+#### Example Response
+
+```json
+{
+  "srcPath": "/home/user/exports/fabric-2026-04-21.jsonl",
+  "imported": 107,
+  "skipped": 2,
+  "errors": []
+}
+```
+
+---
+
+## Observability
+
+### context.metrics
+
+Return in-process observability metrics: counters, latency histograms (p50/p95/p99) for recall calls by mode, memory counts per layer, and pinned counts.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `projectPath` | string | No | |
+| `reset` | boolean | No | If `true`, reset histograms/counters after snapshot (default `false`) |
+
+#### Example Response
+
+```json
+{
+  "stats": { "l1": 3, "l2": 47, "l3": 62, "total": 112, "pinned": { "l2": 2, "l3": 1 } },
+  "counters": { "recall.hybrid": 142, "recall.semantic": 18, "store.l3": 33 },
+  "histograms": {
+    "recall.hybrid.ms": { "count": 142, "p50": 8, "p95": 24, "p99": 61 },
+    "recall.semantic.ms": { "count": 18, "p50": 6, "p95": 12, "p99": 12 }
+  },
+  "reset": false
+}
+```
+
+---
+
+### context.health
+
+Health check. Validates L2 and L3 SQLite connectivity, embedding model presence, and optional sqlite-vec extension. Returns `status: 'ok' | 'degraded'` and per-check detail.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `projectPath` | string | No | |
+
+#### Example Response
+
+```json
+{
+  "status": "ok",
+  "version": "0.12.1",
+  "checks": [
+    { "name": "l2", "status": "ok" },
+    { "name": "l3", "status": "ok" },
+    { "name": "embedding", "status": "ok", "detail": "bge-small-en (384)" },
+    { "name": "sqlite-vec", "status": "ok", "detail": "loaded" }
+  ]
+}
+```
+
+When a check fails, `status` becomes `degraded` and the failing check carries an error detail.
+
+---
+
+## Changes since v0.7.1
+
+This document reflects v0.12.x. For the full per-version changelog, see [CHANGELOG.md](../CHANGELOG.md). At a glance:
+
+- **v0.8 – v0.10**: `context.storeBatch`, `context.backup`, `context.export`/`context.import`, `context.metrics`, `context.health`. Pagination on `context.recall` and `context.list`. Weight multiplier on memories. Hybrid search.
+- **v0.11**: Provenance, dedup-on-store, bi-temporal (`asOf` / `includeSuperseded` on recall; `supersedes` on store). See [Memory Types](memory-types.md#provenance-v011).
+- **v0.12**: Skills (six `context.skill.*` tools), `context.importDocs`, MCP Resources (`memory://...`), MCP Prompts (`cf-*` slash-commands). See [Skills](skills.md) and [MCP Primitives](mcp-primitives.md).
+
+### Tools consolidated before v0.8
 
 | Old Tool | Use Instead | Notes |
 |----------|------------|-------|
@@ -828,4 +1337,4 @@ Five tools were consolidated into existing tools:
 
 ---
 
-[← CLI Setup](cli-setup.md) | [Memory Types →](memory-types.md) | [Back to README](../README.md)
+[← CLI Setup](cli-setup.md) | [Memory Types →](memory-types.md) | [Skills →](skills.md) | [MCP Primitives →](mcp-primitives.md) | [Back to README](../README.md)

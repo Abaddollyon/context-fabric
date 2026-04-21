@@ -39,7 +39,7 @@ graph TB
     end
 
     subgraph Server["Context Fabric MCP Server"]
-        TH["Tool Handlers\n12 MCP tools"]
+        TH["Tool Handlers\n25 MCP tools"]
         CE["Context Engine\nOrchestrator"]
         SR["Smart Router\ncontent → layer"]
         TS["Time Service\nIANA tz, anchors, gaps"]
@@ -80,6 +80,9 @@ graph TB
 - **Node.js 22.5+**: Required for the built-in `node:sqlite` module, which provides synchronous SQLite access with zero native dependencies.
 - **Stdio transport**: MCP tools communicate over stdin/stdout using JSON-RPC. This works identically whether the server runs as a local process or inside Docker.
 - **Per-project engines**: Each unique `projectPath` gets its own `ContextEngine` instance with isolated L2 state. L3 is shared globally.
+
+> [!NOTE]
+> As of v0.12, the MCP server exposes three separate primitives — **Tools** (25 of them, LLM-initiated), **Resources** (`memory://...` URIs, user/client-browseable), and **Prompts** (`cf-*` slash-commands). See [MCP Primitives](mcp-primitives.md) for the full catalog. Skills are stored at L2 with `type='skill'` and a structured `metadata.skill` block; they piggyback on the L2 store so they automatically inherit backup, export/import, and FTS5 search.
 
 ## The Three Layers
 
@@ -394,11 +397,14 @@ Context Fabric uses fastembed-js for generating embeddings. All vector operation
 
 | Property | Value |
 |----------|-------|
-| **Model** | `Xenova/all-MiniLM-L6-v2` |
+| **Model** | `bge-small-en` (loaded via fastembed-js / ONNX) |
 | **Dimensions** | 384 |
 | **Size** | ~80MB (ONNX) |
 | **Speed** | ~1000 docs/sec on CPU |
 | **Runtime** | ONNX — works on any platform |
+
+> [!NOTE]
+> The `embedding.model` key in `config.yaml` still ships as the legacy string `Xenova/all-MiniLM-L6-v2` for backwards compatibility, but the current runtime always loads `bge-small-en` via `fastembed-js` (the default hardcoded in `EmbeddingService`). The config key is reserved for future multi-model support.
 
 **Why this model?**
 1. Small enough for local execution
@@ -629,6 +635,33 @@ flowchart TD
 - **FTS5 search**: Logarithmic — the FTS5 inverted index makes keyword search fast regardless of table size.
 - **Hybrid mode overhead**: Runs both keyword and semantic rankers, then fuses with RRF. Adds ~10-20ms over pure semantic mode.
 - **Cold start**: First embedding requires loading the ONNX model (~2 seconds). Docker pre-bakes the model to avoid download time.
+
+## What's new in v0.11 / v0.12
+
+### Memory intelligence (v0.11)
+
+**Provenance.** Every memory can carry a strict-typed citation block on `metadata.provenance` with `sessionId`, `eventId`, `toolCallId`, `filePath`, `lineStart`/`lineEnd`, `commitSha`, `sourceUrl`, and `capturedAt`. Unknown keys are rejected at the Zod layer so hallucinated fields can't slip into persisted metadata. `capturedAt` is auto-stamped by the engine when the caller omits it. Because `metadata` is already a JSON blob in SQLite, adding provenance required **zero schema migration** — the contract is enforced at the tool surface only.
+
+**Dedup-on-store.** L3 inserts now run a cosine near-duplicate check against existing rows. If the best match ≥ the threshold (default 0.95), the engine dispatches one of three strategies: `skip` (default — return the existing memory with a `_dedupe` annotation, no insert), `merge` (union tags, shallow-merge provenance, touch the existing row), or `allow` (bypass entirely). Dedup runs on L3 only — L1 and L2 are left alone because scratchpads and project notes are near-duplicates by design.
+
+**Bi-temporal.** The L3 schema gained four columns via a versioned migration in `src/layers/semantic.ts`: `valid_from`, `valid_until`, `supersedes_id`, `superseded_by_id`. Storing a new memory with `metadata.supersedes=<old-id>` runs a single transaction that stamps `valid_until` on the predecessor and links both rows in both directions. `context.recall` gained `asOf` (epoch ms — query state-of-knowledge at that moment) and `includeSuperseded` (include rows whose `valid_until` is set). Default recall hides superseded rows. See [Memory Types > Bi-temporal reasoning](memory-types.md#bi-temporal-reasoning-v011) for the full model.
+
+### Agent ergonomics (v0.12)
+
+**Skills as procedural memory.** A new `MemoryType='skill'` (stored at L2) turns reusable instruction blocks into first-class entities. Slug-addressed, kebab-case, unique per project. Six tools cover the CRUD + invoke lifecycle; `context.skill.invoke` atomically bumps `invocationCount` and `lastInvokedAt` so `list()` can surface frequently-used skills first. Skills are stored as ordinary L2 memories with a `metadata.skill` block and the `skill` / `skill:<slug>` tags, so they automatically inherit backup, export/import, and FTS5 search with no new tables. See [Skills](skills.md).
+
+**MCP Resources.** Six `memory://...` URIs (`skills`, `recent`, `conventions`, `decisions`, `skill/{slug}`, `memory/{id}`) give MCP clients read-only browseable views of the fabric. Resources are ideal for agent clients that want stable reference material (e.g. conventions, decisions) without paying for a tool round-trip.
+
+**MCP Prompts.** Five slash-commands (`cf-orient`, `cf-capture-decision`, `cf-review-session`, `cf-search-code`, `cf-invoke-skill`) expose canonical Context Fabric workflows to clients that support the MCP prompts primitive (Claude Desktop, Claude Code, Continue). See [MCP Primitives](mcp-primitives.md).
+
+**importDocs.** One-shot seed from project docs: reads `CLAUDE.md`, `AGENTS.md`, `README.md`, `CHANGELOG.md`, `ROADMAP.md`, `CONTRIBUTING.md` from `projectPath` and stores each as a pinned L2 `convention` (or `scratchpad` for CHANGELOG/ROADMAP) with a `doc-import:<sha>` fingerprint tag. Idempotent — safe to re-run; existing fingerprints are skipped.
+
+### Performance levers
+
+- **FTS5 prefilter on L3.** Vector recall first filters the candidate set via an FTS5 keyword hit, then runs cosine only on the narrow candidate window. Measured at **~8ms p50 at 10K rows** on a dev machine.
+- **Optional `sqlite-vec`.** Opt-in ANN acceleration (`npm i sqlite-vec`) drops p50 to **sub-millisecond at 10K rows** and scales flat. Loads at startup, falls back cleanly if unavailable. Set `CF_DISABLE_SQLITE_VEC=1` to force the fallback. See [Configuration > sqlite-vec](configuration.md#sqlite-vec-optional-ann-acceleration).
+- **Process-wide embedding cache.** The ONNX model is loaded once per process and shared across all engines. The code indexer borrows the same instance — no second 80MB ONNX load.
+- **Transactional multi-row writes.** `context.storeBatch` and import flows wrap all writes in a single SQLite transaction, turning N fsync() calls into one.
 
 ---
 
