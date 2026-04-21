@@ -33,12 +33,21 @@ import { CodeIndex, type IndexStatus } from './indexer/code-index.js';
 // Type Definitions
 // ============================================================================
 
+export interface DedupeConfig {
+  /** Skip dedup entirely when set to 'allow'. */
+  strategy?: 'skip' | 'merge' | 'allow';
+  /** Cosine threshold ≥ which an existing memory is treated as a duplicate. Default 0.95. */
+  threshold?: number;
+}
+
 export interface StoreOptions {
   layer?: MemoryLayer;
   metadata?: Record<string, unknown>;
   tags?: string[];
   ttl?: number;
   pinned?: boolean; // if true, memory is exempt from decay and summarization (v0.5.5)
+  /** v0.11: dedup config. Only applied when targetLayer === L3_SEMANTIC. */
+  dedupe?: DedupeConfig;
 }
 
 export interface RecallOptions {
@@ -210,21 +219,65 @@ export class ContextEngine {
       this.log('debug', `Routing decision: ${routingReason}`);
     }
 
+    // v0.11: pull dedup config out of either options.dedupe (engine API) or
+    // options.metadata.dedupe (LLM/MCP convenience). Never persist the
+    // control block into stored metadata.
+    const metaFromOptions = { ...(options.metadata ?? {}) } as Record<string, unknown>;
+    const dedupeFromMeta = metaFromOptions.dedupe as DedupeConfig | undefined;
+    delete metaFromOptions.dedupe;
+    const dedupe: DedupeConfig = { ...(dedupeFromMeta ?? {}), ...(options.dedupe ?? {}) };
+
     // Prepare metadata
     const metadata: MemoryMetadata = {
       tags: options.tags || [],
       relationships: [],
-      confidence: (options.metadata?.confidence as number) ?? 0.8,
-      source: (options.metadata?.source as 'user_explicit' | 'ai_inferred' | 'system_auto') ?? 'ai_inferred',
-      cliType: (options.metadata?.cliType as string) ?? 'generic',
+      confidence: (metaFromOptions.confidence as number) ?? 0.8,
+      source: (metaFromOptions.source as 'user_explicit' | 'ai_inferred' | 'system_auto') ?? 'ai_inferred',
+      cliType: (metaFromOptions.cliType as string) ?? 'generic',
       projectPath: this.projectPath,
-      ...options.metadata,
+      ...metaFromOptions,
     };
 
     // v0.11: auto-stamp provenance.capturedAt when caller supplied a
     // provenance block without a timestamp. Only stamp — never overwrite.
     if (metadata.provenance && metadata.provenance.capturedAt === undefined) {
       metadata.provenance = { ...metadata.provenance, capturedAt: Date.now() };
+    }
+
+    // v0.11: dedup-on-store for L3. Skip entirely for L1/L2 in this release.
+    if (
+      targetLayer === MemoryLayer.L3_SEMANTIC
+      && dedupe.strategy !== 'allow'
+    ) {
+      const threshold = dedupe.threshold ?? 0.95;
+      const hit = await this.l3.findNearDuplicate(content, threshold);
+      if (hit) {
+        const strategy = dedupe.strategy ?? 'skip';
+        if (strategy === 'merge') {
+          const merged = await this.l3.mergeInto(
+            hit.id,
+            options.tags ?? [],
+            metadata.provenance as Record<string, unknown> | undefined,
+          );
+          (merged as Memory & { _dedupe?: unknown }).layer = MemoryLayer.L3_SEMANTIC;
+          (merged as Memory & { _dedupe?: unknown })._dedupe = {
+            action: 'merged',
+            ofId: hit.id,
+            similarity: hit.similarity,
+          };
+          return merged as Memory;
+        }
+        // default: skip — touch existing and return it
+        await this.l3.touch(hit.id);
+        const refreshed = await this.l3.get(hit.id) as Memory;
+        refreshed.layer = MemoryLayer.L3_SEMANTIC;
+        (refreshed as Memory & { _dedupe?: unknown })._dedupe = {
+          action: 'skipped',
+          ofId: hit.id,
+          similarity: hit.similarity,
+        };
+        return refreshed;
+      }
     }
 
     // Store in appropriate layer

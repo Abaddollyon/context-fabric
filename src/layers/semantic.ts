@@ -671,6 +671,108 @@ export class SemanticMemoryLayer {
     return this.embedder;
   }
 
+  /**
+   * v0.11: find the nearest existing memory to `content` by cosine. Returns
+   * the match only if similarity >= threshold, else null. Uses the FTS5
+   * prefilter path for scalability — the near-dup pool is drawn from the
+   * top-poolSize BM25 candidates, falling back to full scan only when
+   * FTS5 produces nothing (i.e. brand-new vocabulary).
+   *
+   * Dedup is per-layer-instance; callers decide whether to apply it.
+   */
+  async findNearDuplicate(
+    content: string,
+    threshold = 0.95,
+    poolSize = 50,
+  ): Promise<ScoredMemory | null> {
+    if (!content.trim()) return null;
+
+    const queryEmbedding = await this.embedder.embed(content);
+
+    // First try the BM25-prefiltered pool — cheap and matches recall semantics.
+    let rows: DbRow[] = [];
+    const sanitized = SemanticMemoryLayer.sanitizeFTS5Query(content);
+    if (sanitized) {
+      try {
+        rows = this.stmtSearchBM25.all(sanitized, poolSize) as unknown as DbRow[];
+      } catch { /* fall through */ }
+    }
+
+    // Fall back to full scan when FTS5 returns nothing. This handles the
+    // empty-pool case for very short or all-stopword content.
+    if (rows.length === 0) {
+      rows = this.stmtGetAll.all() as unknown as DbRow[];
+    }
+
+    let best: { row: DbRow; sim: number } | null = null;
+    for (const row of rows) {
+      try {
+        const embedding: number[] = JSON.parse(row.embedding);
+        const sim = cosineSimilarity(queryEmbedding, embedding);
+        if (sim >= threshold && (!best || sim > best.sim)) {
+          best = { row, sim };
+        }
+      } catch {
+        /* skip malformed */
+      }
+    }
+
+    return best ? this.rowToScoredMemory(best.row, best.sim) : null;
+  }
+
+  /**
+   * v0.11 merge-on-dedup helper. Unions `addTags` with the existing row's
+   * tags, shallow-merges `addProvenance` onto metadata.provenance (new
+   * values overwrite), and touches the access counter. Returns the updated
+   * memory. Does not re-embed (content is unchanged by definition).
+   */
+  async mergeInto(
+    existingId: string,
+    addTags: string[] = [],
+    addProvenance?: Record<string, unknown>,
+  ): Promise<Memory> {
+    const row = this.stmtGetById.get(existingId) as DbRow | undefined;
+    if (!row) throw new Error(`Memory not found: ${existingId}`);
+
+    let existingTags: string[] = [];
+    try { existingTags = JSON.parse(row.tags); } catch { /* ignore */ }
+    const mergedTags = Array.from(new Set([...existingTags, ...addTags]));
+
+    let existingMeta: Record<string, unknown> = {};
+    try { existingMeta = JSON.parse(row.metadata); } catch { /* ignore */ }
+    if (addProvenance) {
+      const existingProv = (existingMeta.provenance as Record<string, unknown> | undefined) ?? {};
+      existingMeta = {
+        ...existingMeta,
+        provenance: { ...existingProv, ...addProvenance },
+      };
+    }
+
+    const now = Date.now();
+    this.stmtUpdateFull.run(
+      row.content,
+      JSON.stringify(existingMeta),
+      JSON.stringify(mergedTags),
+      row.embedding,
+      now,
+      existingId,
+    );
+    await this.touch(existingId);
+
+    return {
+      id: row.id,
+      type: row.type as MemoryType,
+      content: row.content,
+      metadata: existingMeta as MemoryMetadata,
+      tags: mergedTags,
+      createdAt: row.created_at,
+      updatedAt: now,
+      accessCount: row.access_count + 1,
+      lastAccessedAt: now,
+      pinned: row.pinned === 1,
+    };
+  }
+
   close(): void {
     // v0.8: Explicit WAL checkpoint before close so any pending WAL frames
     // are flushed to the main DB file and the WAL is truncated. Guards
