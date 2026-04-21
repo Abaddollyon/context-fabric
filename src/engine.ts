@@ -28,6 +28,7 @@ import { TimeService } from './time.js';
 import { metrics } from './metrics.js';
 import type { OrientationContext, OfflineGap } from './types.js';
 import { CodeIndex, type IndexStatus } from './indexer/code-index.js';
+import { SkillService } from './skills.js';
 
 // ============================================================================
 // Type Definitions
@@ -114,6 +115,7 @@ export class ContextEngine {
   l1: WorkingMemoryLayer;
   l2: ProjectMemoryLayer;
   l3: SemanticMemoryLayer;
+  skills: SkillService;
   config: FabricConfig;
   projectPath: string;
   patternExtractor: PatternExtractor;
@@ -158,6 +160,7 @@ export class ContextEngine {
     // Initialize helpers
     this.patternExtractor = new PatternExtractor(this.l2, this.l3, this.log.bind(this));
     this.eventHandler = new EventHandler(this);
+    this.skills = new SkillService(this.l2);
 
     // Start auto-cleanup if enabled
     if (options.autoCleanup !== false) {

@@ -10,6 +10,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ReadResourceRequestSchema,
+  ListResourceTemplatesRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -277,6 +282,71 @@ export const MetricsSchema = z.object({
 
 export const HealthSchema = z.object({
   projectPath: z.string().optional(),
+}).strict();
+
+// v0.12: Skills (procedural memory) schemas.
+
+const SkillParameterSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  required: z.boolean().optional(),
+}).strict();
+
+export const SkillCreateSchema = z.object({
+  slug: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]{0,63}$/,
+    'Skill slug must be kebab-case, 1–64 chars, start with [a-z0-9].'),
+  name: z.string().min(1).max(120),
+  description: z.string().min(1).max(500),
+  instructions: z.string().min(1),
+  triggers: z.array(z.string()).optional(),
+  parameters: z.array(SkillParameterSchema).optional(),
+  tags: z.array(z.string()).optional(),
+  projectPath: z.string().optional(),
+}).strict();
+
+export const SkillListSchema = z.object({
+  projectPath: z.string().optional(),
+}).strict();
+
+export const SkillGetSchema = z.object({
+  slug: z.string().min(1),
+  projectPath: z.string().optional(),
+}).strict();
+
+export const SkillInvokeSchema = z.object({
+  slug: z.string().min(1),
+  projectPath: z.string().optional(),
+}).strict();
+
+export const SkillUpdateSchema = z.object({
+  slug: z.string().min(1),
+  name: z.string().min(1).max(120).optional(),
+  description: z.string().min(1).max(500).optional(),
+  instructions: z.string().min(1).optional(),
+  triggers: z.array(z.string()).optional(),
+  parameters: z.array(SkillParameterSchema).optional(),
+  projectPath: z.string().optional(),
+}).strict().refine(
+  d => d.name !== undefined || d.description !== undefined
+    || d.instructions !== undefined || d.triggers !== undefined
+    || d.parameters !== undefined,
+  { message: 'At least one of name, description, instructions, triggers, parameters must be provided.' },
+);
+
+export const SkillDeleteSchema = z.object({
+  slug: z.string().min(1),
+  projectPath: z.string().optional(),
+}).strict();
+
+// v0.12: Seed-from-docs.
+export const ImportDocsSchema = z.object({
+  projectPath: z.string().optional(),
+  files: z.array(z.string()).optional()
+    .describe('Explicit file paths (relative to projectPath) to import. Default: discover CLAUDE.md, AGENTS.md, README.md, CHANGELOG.md, ROADMAP.md at project root.'),
+  maxChars: z.number().int().min(100).max(1_000_000).optional().default(50_000)
+    .describe('Per-file character cap. Longer files are truncated with an explicit marker.'),
+  dryRun: z.boolean().optional().default(false)
+    .describe('If true, returns what would be imported without storing.'),
 }).strict();
 
 
@@ -658,6 +728,123 @@ const TOOLS: Tool[] = [
       properties: { projectPath: { type: "string" } },
     },
   },
+  // v0.12: Skills — procedural memory (reusable instruction blocks invokable by slug).
+  {
+    name: "context.skill.create",
+    description: "Create a new skill (procedural memory). Skills are reusable instruction blocks an agent can invoke by slug. Pinned and exempt from decay.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string", description: "Unique kebab-case id, e.g. 'commit-message'. 1–64 chars, [a-z0-9-]." },
+        name: { type: "string", description: "Human title, e.g. 'Write a commit message'." },
+        description: { type: "string", description: "One-line purpose for listings." },
+        instructions: { type: "string", description: "The skill's body: instructions the agent should follow when invoked." },
+        triggers: { type: "array", items: { type: "string" }, description: "Optional natural-language trigger phrases." },
+        parameters: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              description: { type: "string" },
+              required: { type: "boolean" },
+            },
+            required: ["name"],
+          },
+          description: "Optional declared inputs the skill expects on invoke.",
+        },
+        tags: { type: "array", items: { type: "string" } },
+        projectPath: { type: "string" },
+      },
+      required: ["slug", "name", "description", "instructions"],
+    },
+  },
+  {
+    name: "context.skill.list",
+    description: "List all skills with slug, name, description, version, invocation count, and lastInvokedAt. Sorted by most-recently invoked then alphabetical.",
+    inputSchema: {
+      type: "object",
+      properties: { projectPath: { type: "string" } },
+    },
+  },
+  {
+    name: "context.skill.get",
+    description: "Return a skill by slug including its full instruction body without bumping invocation count. Use context.skill.invoke to actually run a skill.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string" },
+        projectPath: { type: "string" },
+      },
+      required: ["slug"],
+    },
+  },
+  {
+    name: "context.skill.invoke",
+    description: "Retrieve a skill's instructions and declared parameters, bumping invocationCount + lastInvokedAt. Use this when the agent is about to follow the skill, so list() ranks frequently-used skills first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string" },
+        projectPath: { type: "string" },
+      },
+      required: ["slug"],
+    },
+  },
+  {
+    name: "context.skill.update",
+    description: "Update an existing skill. Version bumps when name, description, or instructions change.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string" },
+        name: { type: "string" },
+        description: { type: "string" },
+        instructions: { type: "string" },
+        triggers: { type: "array", items: { type: "string" } },
+        parameters: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              description: { type: "string" },
+              required: { type: "boolean" },
+            },
+            required: ["name"],
+          },
+        },
+        projectPath: { type: "string" },
+      },
+      required: ["slug"],
+    },
+  },
+  {
+    name: "context.skill.delete",
+    description: "Delete a skill by slug. Returns { deleted: boolean }.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        slug: { type: "string" },
+        projectPath: { type: "string" },
+      },
+      required: ["slug"],
+    },
+  },
+  // v0.12: Import docs — one-shot seed from CLAUDE.md / AGENTS.md / README.md / CHANGELOG.md / ROADMAP.md.
+  {
+    name: "context.importDocs",
+    description: "Scan the project for known onboarding docs (CLAUDE.md, AGENTS.md, README.md, CHANGELOG.md, ROADMAP.md) and store each as a typed L2 memory with provenance. Idempotent: running twice does not create duplicates (dedup by file path + sha256).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectPath: { type: "string" },
+        files: { type: "array", items: { type: "string" }, description: "Explicit list of files to import (paths relative to projectPath). Defaults to auto-discovery." },
+        maxChars: { type: "number", description: "Per-file character cap (default 50,000)." },
+        dryRun: { type: "boolean", description: "If true, returns what would be imported without storing." },
+      },
+    },
+  },
 ];
 
 // ============================================================================
@@ -674,11 +861,30 @@ let defaultEngine: ContextEngine | null = null;
 export const shutdown = new ShutdownController();
 
 /**
+ * v0.12 (test-only): close and clear the process-level engine cache. Allows
+ * tests that share a process to keep strict isolation between projectPath
+ * fixtures without the noisy "default engine" leak across files.
+ */
+export function __resetEnginesForTests(): void {
+  for (const engine of engines.values()) {
+    try { engine.close(); } catch { /* ignore */ }
+  }
+  engines.clear();
+  if (defaultEngine) {
+    try { defaultEngine.close(); } catch { /* ignore */ }
+    defaultEngine = null;
+  }
+}
+
+/**
  * Get or create a ContextEngine for a project.
  * Evicts the least-recently-used engine when the cache exceeds MAX_ENGINES.
  */
 function getEngine(projectPath?: string): ContextEngine {
-  const path = projectPath || process.cwd();
+  // CONTEXT_FABRIC_DEFAULT_PROJECT lets tests (and callers) pin the default
+  // project used by primitives that have no projectPath parameter (Resources,
+  // Prompts). Falls back to cwd, which races with chdir under parallel tests.
+  const path = projectPath || process.env.CONTEXT_FABRIC_DEFAULT_PROJECT || process.cwd();
 
   // Move to end on access (LRU ordering — Map preserves insertion order)
   if (engines.has(path)) {
@@ -1153,12 +1359,197 @@ async function handleHealth(args: unknown): Promise<unknown> {
   return engine.health();
 }
 
+// ============================================================================
+// v0.12: Skill handlers
+// ============================================================================
+
+async function handleSkillCreate(args: unknown): Promise<unknown> {
+  const params = SkillCreateSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  const mem = await engine.skills.create({
+    slug: params.slug,
+    name: params.name,
+    description: params.description,
+    instructions: params.instructions,
+    triggers: params.triggers,
+    parameters: params.parameters,
+    tags: params.tags,
+  });
+  return {
+    id: mem.id,
+    slug: mem.metadata?.skill?.slug,
+    name: mem.metadata?.skill?.name,
+    description: mem.metadata?.skill?.description,
+    version: mem.metadata?.skill?.version,
+  };
+}
+
+async function handleSkillList(args: unknown): Promise<unknown> {
+  const params = SkillListSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  const skills = await engine.skills.list();
+  return { skills, count: skills.length };
+}
+
+async function handleSkillGet(args: unknown): Promise<unknown> {
+  const params = SkillGetSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  const mem = await engine.skills.getBySlug(params.slug);
+  if (!mem) throw new ToolError('NOT_FOUND', `Skill not found: ${params.slug}`);
+  const sk = mem.metadata!.skill!;
+  return {
+    id: mem.id,
+    slug: sk.slug,
+    name: sk.name,
+    description: sk.description,
+    instructions: mem.content,
+    triggers: sk.triggers ?? [],
+    parameters: sk.parameters ?? [],
+    version: sk.version ?? 1,
+    invocationCount: sk.invocationCount ?? 0,
+    lastInvokedAt: sk.lastInvokedAt ?? null,
+  };
+}
+
+async function handleSkillInvoke(args: unknown): Promise<unknown> {
+  const params = SkillInvokeSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  return engine.skills.invoke(params.slug);
+}
+
+async function handleSkillUpdate(args: unknown): Promise<unknown> {
+  const params = SkillUpdateSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  const mem = await engine.skills.update(params.slug, {
+    name: params.name,
+    description: params.description,
+    instructions: params.instructions,
+    triggers: params.triggers,
+    parameters: params.parameters,
+  });
+  const sk = mem.metadata!.skill!;
+  return {
+    id: mem.id,
+    slug: sk.slug,
+    name: sk.name,
+    description: sk.description,
+    version: sk.version,
+  };
+}
+
+async function handleSkillDelete(args: unknown): Promise<unknown> {
+  const params = SkillDeleteSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  const deleted = await engine.skills.deleteBySlug(params.slug);
+  return { deleted, slug: params.slug };
+}
+
+// ============================================================================
+// v0.12: importDocs handler
+// ============================================================================
+
+const DEFAULT_DOC_CANDIDATES = [
+  'CLAUDE.md',
+  'AGENTS.md',
+  'README.md',
+  'CHANGELOG.md',
+  'ROADMAP.md',
+  'CONTRIBUTING.md',
+];
+
+function docTypeFor(fileName: string): import('./types.js').MemoryType {
+  const lower = fileName.toLowerCase();
+  if (lower === 'changelog.md' || lower === 'roadmap.md') return 'scratchpad';
+  if (lower === 'claude.md' || lower === 'agents.md') return 'convention';
+  return 'convention'; // README/CONTRIBUTING → project conventions
+}
+
+async function handleImportDocs(args: unknown): Promise<unknown> {
+  const params = ImportDocsSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const crypto = await import('node:crypto');
+
+  const projectPath = params.projectPath
+    ?? engine.projectPath
+    ?? process.cwd();
+
+  const candidates = params.files && params.files.length > 0
+    ? params.files
+    : DEFAULT_DOC_CANDIDATES;
+
+  const imported: Array<{ file: string; id?: string; bytes: number; truncated: boolean; status: 'stored' | 'skipped-duplicate' | 'skipped-missing' | 'would-import' }> = [];
+
+  for (const rel of candidates) {
+    const full = path.isAbsolute(rel) ? rel : path.join(projectPath, rel);
+    if (!fs.existsSync(full)) {
+      imported.push({ file: rel, bytes: 0, truncated: false, status: 'skipped-missing' });
+      continue;
+    }
+    let content = fs.readFileSync(full, 'utf8');
+    const origBytes = Buffer.byteLength(content, 'utf8');
+    const max = params.maxChars;
+    const truncated = content.length > max;
+    if (truncated) {
+      content = content.slice(0, max) + `\n\n... [truncated at ${max} chars of ${content.length}]`;
+    }
+    const sha = crypto.createHash('sha256').update(content).digest('hex').slice(0, 16);
+    const fileName = path.basename(full);
+
+    if (params.dryRun) {
+      imported.push({ file: rel, bytes: origBytes, truncated, status: 'would-import' });
+      continue;
+    }
+
+    // Idempotency: check for an existing memory with the same provenance.filePath + hash.
+    // Use list-by-tag on the fingerprint tag we attach below.
+    const fingerprint = `doc-import:${sha}`;
+    const existing = await engine.listMemories({
+      layer: 2 as import('./types.js').MemoryLayer,
+      tags: [fingerprint],
+      limit: 1,
+    });
+    if (existing.memories.length > 0) {
+      imported.push({ file: rel, id: existing.memories[0].id, bytes: origBytes, truncated, status: 'skipped-duplicate' });
+      continue;
+    }
+
+    const mem = await engine.store(content, docTypeFor(fileName), {
+      layer: 2 as import('./types.js').MemoryLayer,
+      tags: ['doc', `doc:${fileName.toLowerCase()}`, fingerprint],
+      pinned: true,
+      metadata: {
+        title: fileName,
+        provenance: {
+          filePath: rel,
+          capturedAt: Date.now(),
+        },
+        source: 'user_explicit',
+      },
+    });
+    imported.push({ file: rel, id: mem.id, bytes: origBytes, truncated, status: 'stored' });
+  }
+
+  return {
+    projectPath,
+    imported,
+    summary: {
+      total: imported.length,
+      stored: imported.filter(x => x.status === 'stored').length,
+      skipped: imported.filter(x => x.status === 'skipped-duplicate' || x.status === 'skipped-missing').length,
+      truncated: imported.filter(x => x.truncated).length,
+    },
+    dryRun: params.dryRun,
+  };
+}
+
 
 // ============================================================================
 // Server Setup
 // ============================================================================
 
-async function createServer(): Promise<Server> {
+export async function createServer(): Promise<Server> {
   const server = new Server(
     {
       name: "context-fabric",
@@ -1167,9 +1558,307 @@ async function createServer(): Promise<Server> {
     {
       capabilities: {
         tools: {},
+        resources: { subscribe: false, listChanged: false },
+        prompts: { listChanged: false },
       },
     }
   );
+
+  // ==========================================================================
+  // v0.12: Resources — expose memories, skills, patterns as browseable URIs.
+  // Namespace: memory://
+  //   memory://skills                → list all skills
+  //   memory://skill/{slug}          → one skill (instructions body)
+  //   memory://memory/{id}           → any memory across L1/L2/L3
+  //   memory://recent                → 20 most recent L2 memories
+  //   memory://conventions           → L2 memories of type='convention'
+  //   memory://decisions             → L2 memories of type='decision'
+  // ==========================================================================
+  server.setRequestHandler(ListResourcesRequestSchema, async () => {
+    const engine = getEngine();
+    const resources: Array<{ uri: string; name: string; description?: string; mimeType?: string }> = [
+      {
+        uri: "memory://skills",
+        name: "All skills",
+        description: "Procedural memory: every skill registered on this project.",
+        mimeType: "application/json",
+      },
+      {
+        uri: "memory://recent",
+        name: "Recent memories",
+        description: "20 most recently updated L2 memories.",
+        mimeType: "application/json",
+      },
+      {
+        uri: "memory://conventions",
+        name: "Project conventions",
+        description: "L2 memories of type='convention' (house rules, coding style, imported CLAUDE.md/AGENTS.md).",
+        mimeType: "application/json",
+      },
+      {
+        uri: "memory://decisions",
+        name: "Project decisions",
+        description: "L2 memories of type='decision' (architectural/product choices with rationale).",
+        mimeType: "application/json",
+      },
+    ];
+
+    // One resource per skill — lets clients preview them individually.
+    try {
+      const skills = await engine.skills.list();
+      for (const s of skills) {
+        resources.push({
+          uri: `memory://skill/${s.slug}`,
+          name: `Skill: ${s.name}`,
+          description: s.description,
+          mimeType: "text/markdown",
+        });
+      }
+    } catch {
+      // Swallow — if the engine can't be initialized the top-level list still works.
+    }
+
+    return { resources };
+  });
+
+  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
+    resourceTemplates: [
+      {
+        uriTemplate: "memory://skill/{slug}",
+        name: "Skill by slug",
+        description: "Get a specific skill's instructions (non-invoking read).",
+        mimeType: "text/markdown",
+      },
+      {
+        uriTemplate: "memory://memory/{id}",
+        name: "Memory by id",
+        description: "Read any memory by its UUID across L1/L2/L3.",
+        mimeType: "application/json",
+      },
+    ],
+  }));
+
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const { uri } = request.params as { uri: string };
+    const engine = getEngine();
+
+    // Match URI patterns. All responses are MCP Resource contents.
+    if (uri === "memory://skills") {
+      const skills = await engine.skills.list();
+      return {
+        contents: [{
+          uri,
+          mimeType: "application/json",
+          text: JSON.stringify({ skills, count: skills.length }, null, 2),
+        }],
+      };
+    }
+
+    const skillMatch = uri.match(/^memory:\/\/skill\/([a-z0-9][a-z0-9-]{0,63})$/);
+    if (skillMatch) {
+      const slug = skillMatch[1];
+      const mem = await engine.skills.getBySlug(slug);
+      if (!mem) throw new ToolError('NOT_FOUND', `Skill not found: ${slug}`);
+      const sk = mem.metadata!.skill!;
+      const md = [
+        `# ${sk.name}`,
+        '',
+        `_${sk.description}_`,
+        '',
+        sk.triggers && sk.triggers.length
+          ? `**Triggers:** ${sk.triggers.map(t => `\`${t}\``).join(', ')}\n`
+          : '',
+        sk.parameters && sk.parameters.length
+          ? `**Parameters:**\n${sk.parameters.map(p => `- \`${p.name}\`${p.required ? ' *(required)*' : ''}${p.description ? ' — ' + p.description : ''}`).join('\n')}\n`
+          : '',
+        '## Instructions',
+        '',
+        mem.content,
+      ].filter(Boolean).join('\n');
+      return {
+        contents: [{ uri, mimeType: "text/markdown", text: md }],
+      };
+    }
+
+    const memMatch = uri.match(/^memory:\/\/memory\/([0-9a-fA-F-]{36})$/);
+    if (memMatch) {
+      const id = memMatch[1];
+      const got = await engine.getMemory(id);
+      if (!got) throw new ToolError('NOT_FOUND', `Memory not found: ${id}`);
+      return {
+        contents: [{
+          uri,
+          mimeType: "application/json",
+          text: JSON.stringify(got, null, 2),
+        }],
+      };
+    }
+
+    if (uri === "memory://recent") {
+      const res = await engine.listMemories({ layer: 2 as import('./types.js').MemoryLayer, limit: 20 });
+      return {
+        contents: [{ uri, mimeType: "application/json", text: JSON.stringify(res, null, 2) }],
+      };
+    }
+
+    if (uri === "memory://conventions") {
+      const res = await engine.listMemories({ layer: 2 as import('./types.js').MemoryLayer, type: 'convention', limit: 100 });
+      return {
+        contents: [{ uri, mimeType: "application/json", text: JSON.stringify(res, null, 2) }],
+      };
+    }
+
+    if (uri === "memory://decisions") {
+      const res = await engine.listMemories({ layer: 2 as import('./types.js').MemoryLayer, type: 'decision', limit: 100 });
+      return {
+        contents: [{ uri, mimeType: "application/json", text: JSON.stringify(res, null, 2) }],
+      };
+    }
+
+    throw new ToolError('UNKNOWN_RESOURCE', `Unknown resource uri: ${uri}`);
+  });
+
+  // ==========================================================================
+  // v0.12: Prompts — slash-command-style workflow templates.
+  // ==========================================================================
+  const PROMPTS: Array<{ name: string; description: string; arguments?: Array<{ name: string; description?: string; required?: boolean }> }> = [
+    {
+      name: "cf-orient",
+      description: "Get oriented for a new session: summarize what happened since last time, surface open threads and recent decisions.",
+      arguments: [],
+    },
+    {
+      name: "cf-capture-decision",
+      description: "Walk the agent through capturing an architectural/product decision with rationale and alternatives into L2.",
+      arguments: [
+        { name: "topic", description: "Short label for the decision, e.g. 'auth backend'.", required: true },
+      ],
+    },
+    {
+      name: "cf-review-session",
+      description: "Review the current session: list what was attempted, what succeeded, and propose memories to store.",
+      arguments: [],
+    },
+    {
+      name: "cf-search-code",
+      description: "Hybrid code search prompt — chooses the right mode (text / symbol / semantic) for the query.",
+      arguments: [
+        { name: "query", description: "What to search for.", required: true },
+      ],
+    },
+    {
+      name: "cf-invoke-skill",
+      description: "Invoke a named skill by slug, listing any required parameters.",
+      arguments: [
+        { name: "slug", description: "Skill slug (see context.skill.list).", required: true },
+      ],
+    },
+  ];
+
+  server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: PROMPTS }));
+
+  server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params as { name: string; arguments?: Record<string, string> };
+    const a = args ?? {};
+
+    const messages: Array<{ role: 'user' | 'assistant'; content: { type: 'text'; text: string } }> = [];
+
+    switch (name) {
+      case "cf-orient":
+        messages.push({
+          role: 'user',
+          content: {
+            type: 'text',
+            text: [
+              'Call the `context.orient` tool now. Then:',
+              '1. Summarize the gap since last session (hours/days, what changed).',
+              '2. List the top 3 open threads or TODOs surfaced.',
+              '3. List the most recent architectural decisions.',
+              'Finish with: "Ready. What are we doing today?"',
+            ].join('\n'),
+          },
+        });
+        break;
+      case "cf-capture-decision": {
+        const topic = a.topic ?? '<unspecified>';
+        messages.push({
+          role: 'user',
+          content: {
+            type: 'text',
+            text: [
+              `Capture a decision about: **${topic}**.`,
+              '',
+              'Walk me through:',
+              '1. What are we deciding?',
+              '2. What options did we consider?',
+              '3. Which option did we pick and why?',
+              '4. What are the trade-offs / what are we giving up?',
+              '5. Are there reversibility / migration concerns?',
+              '',
+              `When I confirm, call \`context.store\` with type="decision", a clear title, and store it in L2 with tags including "decision" and "${topic.toLowerCase().replace(/\s+/g, '-')}".`,
+            ].join('\n'),
+          },
+        });
+        break;
+      }
+      case "cf-review-session":
+        messages.push({
+          role: 'user',
+          content: {
+            type: 'text',
+            text: [
+              'Review the work we did in this session.',
+              '1. What did we attempt?',
+              '2. What actually succeeded (tests passing, code shipped, decisions made)?',
+              '3. What is still open / blocked?',
+              'Then propose up to 5 memories to persist via `context.store` or `context.storeBatch`. Ask me to confirm before writing.',
+            ].join('\n'),
+          },
+        });
+        break;
+      case "cf-search-code": {
+        const query = a.query ?? '';
+        messages.push({
+          role: 'user',
+          content: {
+            type: 'text',
+            text: [
+              `Search the code index for: **${query}**.`,
+              '',
+              'Pick the best `context.searchCode` mode:',
+              '- `symbol` if the query looks like an identifier or `Class.method`.',
+              '- `text` if the query contains quotes or obvious literal tokens.',
+              '- `semantic` for anything conceptual.',
+              '',
+              'Return: top 5 hits with file:line and a one-line summary of each. If the index is stale, say so.',
+            ].join('\n'),
+          },
+        });
+        break;
+      }
+      case "cf-invoke-skill": {
+        const slug = a.slug ?? '';
+        messages.push({
+          role: 'user',
+          content: {
+            type: 'text',
+            text: [
+              `Call \`context.skill.invoke\` with slug="${slug}".`,
+              'Read the returned instructions carefully, list any required parameters, and ask me to provide them before proceeding.',
+            ].join('\n'),
+          },
+        });
+        break;
+      }
+      default:
+        throw new ToolError('UNKNOWN_PROMPT', `Unknown prompt: ${name}`);
+    }
+
+    return {
+      description: PROMPTS.find(p => p.name === name)?.description,
+      messages,
+    };
+  });
 
   // List available tools
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -1251,6 +1940,27 @@ async function createServer(): Promise<Server> {
           break;
         case "context.health":
           result = await handleHealth(args);
+          break;
+        case "context.skill.create":
+          result = await handleSkillCreate(args);
+          break;
+        case "context.skill.list":
+          result = await handleSkillList(args);
+          break;
+        case "context.skill.get":
+          result = await handleSkillGet(args);
+          break;
+        case "context.skill.invoke":
+          result = await handleSkillInvoke(args);
+          break;
+        case "context.skill.update":
+          result = await handleSkillUpdate(args);
+          break;
+        case "context.skill.delete":
+          result = await handleSkillDelete(args);
+          break;
+        case "context.importDocs":
+          result = await handleImportDocs(args);
           break;
         default:
           throw new ToolError('UNKNOWN_TOOL', `Unknown tool: ${name}`);

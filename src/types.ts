@@ -13,6 +13,7 @@ export type MemoryType =
   | "convention"
   | "scratchpad"
   | "relationship"
+  | "skill"       // v0.12: procedural memory — reusable instruction blocks an agent can invoke
   | "code"        // Legacy: code snippet
   | "message"     // Legacy: conversation message
   | "thought"     // Legacy: agent thought
@@ -89,6 +90,29 @@ export interface TemporalInfo {
   supersededById?: string | null;         // this memory was replaced by
 }
 
+/**
+ * v0.12: Procedural memory. A skill is a named, reusable instruction block an
+ * agent can invoke by slug (e.g. "commit-message", "triage-pr"). Storage piggy-
+ * backs on the existing Memory row — body lives in `content`, structured meta
+ * here. Slug is globally unique per project (enforced at the engine boundary).
+ */
+export interface SkillMeta {
+  slug: string;                // kebab-case unique id, e.g. "commit-message"
+  name: string;                // human title, e.g. "Write a commit message"
+  description: string;         // one-line purpose; surfaced in resource/prompt listings
+  triggers?: string[];         // natural-language hints for auto-surfacing during recall
+  parameters?: SkillParameter[]; // optional inputs callers must/should provide on invoke
+  version?: number;            // bump on substantive edits (default 1)
+  invocationCount?: number;    // incremented every context.skill.invoke; ops signal
+  lastInvokedAt?: number;      // epoch ms
+}
+
+export interface SkillParameter {
+  name: string;
+  description?: string;
+  required?: boolean;
+}
+
 export interface MemoryMetadata {
   title?: string;
   tags: string[];
@@ -107,6 +131,10 @@ export interface MemoryMetadata {
   provenance?: Provenance;
   // v0.11: populated by L3 on recall/get from the bi-temporal columns.
   temporal?: TemporalInfo;
+  // v0.12: Skills metadata (only set when type === 'skill'). Zod-validated at the
+  // server boundary via SkillMetaSchema; kept as a free-form shape here so
+  // older stored records keep round-tripping cleanly.
+  skill?: SkillMeta;
   // Allow additional legacy fields
   [key: string]: unknown;
 }

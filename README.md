@@ -4,8 +4,8 @@
 
 **Persistent memory for AI coding agents.** Your agent remembers everything -- across sessions, projects, and tools.
 
-[![Version](https://img.shields.io/badge/version-0.11.2-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
-[![Tests](https://img.shields.io/badge/tests-697%20passing-brightgreen?style=flat-square)](tests/)
+[![Version](https://img.shields.io/badge/version-0.12.0-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
+[![Tests](https://img.shields.io/badge/tests-719%20passing-brightgreen?style=flat-square)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Node](https://img.shields.io/badge/node-22.5%2B-brightgreen?style=flat-square)](https://nodejs.org/)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](Dockerfile)
@@ -43,8 +43,15 @@ Context Fabric is an [MCP](https://modelcontextprotocol.io/) server that gives y
 - **Dedup-on-store** -- cosine near-duplicate detection at L3 with `skip` / `merge` / `allow` strategies. Stops duplicate facts from accumulating.
 - **Bi-temporal memory** -- explicit `supersedes` linkage + `validFrom` / `validUntil` columns. Query as-of a past point in time with `recall({ asOf })`. Zep-style temporal reasoning, fully local.
 
+### Agent ergonomics (v0.12)
+- **Skills** -- procedural memory (`MemoryType = "skill"`) with slug, triggers, parameters, and usage stats. Five tools: `context.skill.create` / `list` / `get` / `invoke` / `remove`. Invocation is logged and reflected in list ordering.
+- **MCP Resources** -- browseable context under `memory://`: `memory://skills`, `memory://recent`, `memory://conventions`, `memory://decisions`, plus templates `memory://skill/{slug}` (Markdown) and `memory://memory/{id}` (JSON).
+- **MCP Prompts** -- slash-commands for agents: `cf-orient`, `cf-capture-decision`, `cf-review-session`, `cf-search-code`, `cf-invoke-skill`.
+- **`context.importDocs`** -- one-shot seed from `CLAUDE.md`, `AGENTS.md`, `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `ARCHITECTURE.md`. Idempotent via tag-dedup.
+- **Recall-quality harness** -- `npm run bench:quality` measures recall@k + MRR against a 20-pair golden set across {0, 100, 1000} distractor pool sizes.
+
 ### Operations & DX
-- **18 MCP tools** -- store, storeBatch, recall, orient, getCurrent, summarize, searchCode, CRUD (get/update/delete/list), reportEvent, setup, backup, export, import, metrics, health.
+- **24 MCP tools** -- store, storeBatch, recall, orient, getCurrent, summarize, searchCode, CRUD (get/update/delete/list), reportEvent, setup, backup, export, import, metrics, health, importDocs, and 5 skill tools.
 - **Graceful shutdown** -- SIGTERM/SIGINT drain in-flight calls, checkpoint WAL, close cleanly.
 - **Data integrity** -- startup `PRAGMA quick_check`, explicit transactions on every multi-row write, `VACUUM INTO`-based online backups.
 - **Observability** -- structured logger + `context.metrics` + `context.health` tools.

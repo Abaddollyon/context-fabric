@@ -38,16 +38,14 @@ export default defineConfig({
     pool: 'forks',
     poolOptions: {
       forks: {
-        // Reuse worker processes across files to amortize v8 + onnx warmup.
-        // Each fork still isolates from the others, but we stop paying the
-        // per-file fork-spawn cost (~50-100ms each across 37 files).
         singleFork: false,
       },
     },
-    // Skip the test-isolation reload between files in the same worker.
-    // Our tests use per-test tmp dirs + explicit engine/layer close(), so
-    // shared-module state (constants, schemas) is safe to keep across files
-    // and saves on module re-evaluation + esm graph re-import per file.
+    // v0.12: disable cross-file parallelism because several integration tests
+    // mutate process-global state (engines Map, env vars, config cache) and
+    // cannot safely interleave. Within-file tests still run sequentially by
+    // default, so this serializes file-level execution only.
+    fileParallelism: false,
     isolate: false,
   },
 });

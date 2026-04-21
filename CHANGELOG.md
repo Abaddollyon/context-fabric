@@ -7,6 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-04-21
+
+### Theme: Agent Ergonomics — Skills, Resources, Prompts, ImportDocs, Eval harness
+
+First release that makes Context Fabric speak the full MCP vocabulary (Tools +
+Resources + Prompts) and adds procedural memory ("Skills") alongside the
+existing semantic/episodic layers. Turns a pure memory store into a full
+agent-ergonomics server.
+
+### Added
+
+- **Skills layer (procedural memory).** New `MemoryType = "skill"` backed by
+  L2 with structured `metadata.skill` ({ slug, name, description, triggers,
+  parameters, version, invocationCount, lastInvokedAt }). `SkillService`
+  (`src/skills.ts`) handles create/list/getBySlug/invoke/remove with
+  slug-uniqueness enforcement and usage stats. Five new MCP tools:
+  `context.skill.create`, `context.skill.list`, `context.skill.get`,
+  `context.skill.invoke`, `context.skill.remove`. Skills are pinned by
+  default so they're exempt from decay.
+- **MCP Resources.** Server now declares the `resources` capability and
+  exposes four static URIs plus two templates:
+  - `memory://skills` — list of installed skills (JSON)
+  - `memory://recent` — last 20 memories across layers (JSON)
+  - `memory://conventions` — all memories tagged `convention` (JSON)
+  - `memory://decisions` — all memories tagged `decision` (JSON)
+  - `memory://skill/{slug}` — one skill as Markdown
+  - `memory://memory/{id}` — any memory by UUID as JSON
+- **MCP Prompts.** Five slash-commands for agents:
+  - `cf-orient` — run context.orient and summarize the return
+  - `cf-capture-decision` — ADR-style prompt with kebab-tag suggestion
+  - `cf-review-session` — walk the last session's events + memories
+  - `cf-search-code` — code search + citation workflow
+  - `cf-invoke-skill` — retrieve and apply a named skill
+- **`context.importDocs` tool.** One-shot seed from onboarding docs. Auto-
+  discovers `CLAUDE.md`, `AGENTS.md`, `README.md`, `CHANGELOG.md`,
+  `CONTRIBUTING.md`, `ARCHITECTURE.md` at the project root by default, or
+  takes an explicit file list. Supports `dryRun` preview and a `maxChars`
+  per-file truncation cap. Idempotent via tag-based dedup.
+- **Recall quality benchmark** (`benchmarks/recall-quality.ts`, `npm run
+  bench:quality`). 20 golden Q/A pairs, measures recall@k and MRR across
+  pool sizes {0, 100, 1000}. Gives us a quality regression signal as we
+  evolve retrieval.
+- **Tests (unit + integration).**
+  - `tests/unit/skills.test.ts` — 8 tests
+  - `tests/integration/mcp-resources-prompts.test.ts` — 8 tests (via
+    InMemoryTransport + Client → Server round-trip)
+  - `tests/integration/import-docs.test.ts` — 6 tests
+
+### Changed
+
+- **`src/config.ts` now honors `CONTEXT_FABRIC_HOME`.** Previously the
+  config dir was hard-wired to `~/.context-fabric`, which meant every test
+  process shared one real DB file. Now evaluated lazily via helper
+  functions, so per-test `process.env.CONTEXT_FABRIC_HOME` + `resetConfigCache()`
+  gives full storage isolation. Zero production impact (default
+  behaviour unchanged when env is not set).
+- **`createServer()` and `__resetEnginesForTests()` exported** from
+  `src/server.ts` so integration tests can round-trip MCP without
+  spawning stdio.
+- **`CONTEXT_FABRIC_DEFAULT_PROJECT` env var.** `getEngine()` falls back
+  to this before `cwd()`, giving Resources/Prompts a deterministic
+  project binding under test.
+- **Tool count: 18 → 24.** Five skill tools + `context.importDocs`.
+- **Server capabilities now include `resources` and `prompts`** in the
+  `initialize` response.
+
+### Fixed
+
+- Concurrent test files no longer clobber each other's engine state
+  (`fileParallelism: false` in `vitest.config.ts`) — a necessary tradeoff
+  because several integration suites mutate process-global state
+  (env vars, engines Map, config cache). Per-file tests still run
+  sequentially by default, so only cross-file parallelism is disabled.
+  Net effect: ~56s → ~63s on a 720-test suite.
+
+### Stats
+
+- **719 tests passing** (was 697).
+- Five MCP primitives covered: Tools ✓, Resources ✓, Prompts ✓,
+  Elicitation (ready), Sampling (ready).
+
 ## [0.11.2] - 2026-04-21
 
 ### Theme: Performance polish + README refresh

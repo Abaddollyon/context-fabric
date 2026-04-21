@@ -9,10 +9,12 @@ import { homedir } from "os";
 import YAML from "js-yaml";
 import type { FabricConfig, UserPreferences } from "./types.js";
 
-const CONFIG_DIR = join(homedir(), ".context-fabric");
-const CONFIG_FILE = join(CONFIG_DIR, "config.yaml");
-const DEFAULT_L2_PATH = join(CONFIG_DIR, "l2-project.db");
-const DEFAULT_L3_PATH = join(CONFIG_DIR, "l3-semantic");
+function getConfigDir(): string {
+  return process.env.CONTEXT_FABRIC_HOME || join(homedir(), ".context-fabric");
+}
+function getConfigFile(): string { return join(getConfigDir(), "config.yaml"); }
+function getDefaultL2Path(): string { return join(getConfigDir(), "l2-project.db"); }
+function getDefaultL3Path(): string { return join(getConfigDir(), "l3-semantic"); }
 
 const DEFAULT_USER_PREFERENCES: UserPreferences = {
   autoCapturePatterns: true,
@@ -22,10 +24,11 @@ const DEFAULT_USER_PREFERENCES: UserPreferences = {
   preferredEmbeddingModel: "fastembed-js",
 };
 
-const DEFAULT_CONFIG: FabricConfig = {
+function buildDefaultConfig(): FabricConfig {
+  return {
   storage: {
-    l2Path: DEFAULT_L2_PATH,
-    l3Path: DEFAULT_L3_PATH,
+    l2Path: getDefaultL2Path(),
+    l3Path: getDefaultL3Path(),
     backupIntervalHours: 24,
   },
   ttl: {
@@ -60,7 +63,8 @@ const DEFAULT_CONFIG: FabricConfig = {
     watchEnabled: true,
     excludePatterns: [],
   },
-};
+  };
+}
 
 /**
  * Generate default config file content
@@ -70,8 +74,8 @@ function generateDefaultConfigYaml(): string {
 # Generated automatically - modify as needed
 
 storage:
-  l2Path: ${DEFAULT_L2_PATH}
-  l3Path: ${DEFAULT_L3_PATH}
+  l2Path: ${getDefaultL2Path()}
+  l3Path: ${getDefaultL3Path()}
   backupIntervalHours: 24
 
 ttl:
@@ -117,13 +121,15 @@ codeIndex:
  * Ensure the config directory and default config file exist
  */
 export function ensureConfigDir(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
+  const dir = getConfigDir();
+  const file = getConfigFile();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
   }
 
-  if (!existsSync(CONFIG_FILE)) {
+  if (!existsSync(file)) {
     const yaml = generateDefaultConfigYaml();
-    writeFileSync(CONFIG_FILE, yaml, "utf-8");
+    writeFileSync(file, yaml, "utf-8");
   }
 
   // Ensure storage directories exist
@@ -138,21 +144,23 @@ export function ensureConfigDir(): void {
  * Load configuration from file or return defaults
  */
 export function loadConfig(): FabricConfig {
-  if (!existsSync(CONFIG_FILE)) {
-    return DEFAULT_CONFIG;
+  const file = getConfigFile();
+  const defaults = buildDefaultConfig();
+  if (!existsSync(file)) {
+    return defaults;
   }
 
   try {
-    const content = readFileSync(CONFIG_FILE, "utf-8");
+    const content = readFileSync(file, "utf-8");
     const parsed = YAML.load(content) as Partial<FabricConfig>;
 
-    return mergeConfig(DEFAULT_CONFIG, parsed);
+    return mergeConfig(defaults, parsed);
   } catch (error) {
     console.warn(
-      `Warning: Failed to load config from ${CONFIG_FILE}, using defaults:`,
+      `Warning: Failed to load config from ${file}, using defaults:`,
       error
     );
-    return DEFAULT_CONFIG;
+    return defaults;
   }
 }
 
@@ -227,13 +235,15 @@ export function getTTLConfig(): FabricConfig["ttl"] {
  * Creates directories and default config if needed
  */
 export function initialize(): void {
-  if (!existsSync(CONFIG_DIR)) {
-    mkdirSync(CONFIG_DIR, { recursive: true });
+  const dir = getConfigDir();
+  const file = getConfigFile();
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
   }
 
-  if (!existsSync(CONFIG_FILE)) {
+  if (!existsSync(file)) {
     const yaml = generateDefaultConfigYaml();
-    writeFileSync(CONFIG_FILE, yaml, "utf-8");
+    writeFileSync(file, yaml, "utf-8");
   }
 
   // Ensure L3 storage directory exists
