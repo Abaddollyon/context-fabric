@@ -1,484 +1,90 @@
 # Tools Reference
 
-Context Fabric exposes **12 MCP tools** organized into six categories. Your AI calls these automatically — you rarely need to invoke them by hand.
+Context Fabric exposes **25 MCP tools** across memory, search, setup, observability, import/export, and procedural-skill workflows.
 
-> [!TIP]
-> The most commonly used tools are `context.orient` (session start), `context.store` (decisions, bug fixes), and `context.recall` (before making changes).
-
----
-
-## Table of Contents
-
-- [Quick Overview](#quick-overview)
-- [Core Tools](#core-tools)
-  - [context.orient](#contextorient-)
-  - [context.store](#contextstore-)
-  - [context.recall](#contextrecall-)
-  - [context.getCurrent](#contextgetcurrent)
-- [Code Tools](#code-tools)
-  - [context.searchCode](#contextsearchcode-)
-- [CRUD Tools](#crud-tools)
-  - [context.get](#contextget)
-  - [context.update](#contextupdate)
-  - [context.delete](#contextdelete)
-  - [context.list](#contextlist)
-- [Management Tools](#management-tools)
-  - [context.summarize](#contextsummarize)
-  - [context.reportEvent](#contextreportevent)
-- [Setup Tools](#setup-tools)
-  - [context.setup](#contextsetup)
-- [Memory Layers](#memory-layers)
-- [Migration from v0.6](#migration-from-v06)
-- [See Also](#see-also)
+For the full parameter-level reference, use the canonical repo doc:
+- [docs/tools-reference.md](https://github.com/Abaddollyon/context-fabric/blob/main/docs/tools-reference.md)
 
 ---
 
-## Quick Overview
+## The tools most users feel first
 
-| Category | Tools | Purpose |
-|:---------|:------|:--------|
-| **Core** | `orient`, `store`, `recall`, `getCurrent` | Session orientation, store and retrieve memories |
-| **Code** | `searchCode` | Search indexed source code |
-| **CRUD** | `get`, `update`, `delete`, `list` | Memory lifecycle management |
-| **Management** | `summarize`, `reportEvent` | Maintenance and event capture |
-| **Setup** | `setup` | CLI configuration |
-
----
-
-## Core Tools
-
-### `context.orient`
-The orientation loop. Call this at the start of every session to ground the AI in time, project, and recent changes. Also resolves natural-language date expressions and provides world-clock conversions.
-
-**Returns:**
-- Current time with timezone context
-- Time since last session (offline gap)
-- Memories added while you were away
-- Human-readable summary
-- Optionally: resolved date and timezone conversions
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `timezone` | string | No | IANA timezone (e.g., `America/New_York`). Defaults to system timezone |
-| `projectPath` | string | No | Project path. Defaults to current working directory |
-| `expression` | string | No | Date expression to resolve (e.g., `tomorrow`, `next Monday`, `end of week`) |
-| `also` | string[] | No | Additional IANA timezones for world-clock conversion |
-
-**Supported Expressions**
-
-| Expression | Result |
-|:-----------|:-------|
-| `now`, `today`, `yesterday`, `tomorrow` | Self-explanatory |
-| `start of day`, `end of day` | Day boundaries |
-| `start of week`, `end of week` | Week boundaries (Mon-Sun) |
-| `next Monday` … `next Sunday` | Upcoming weekday |
-| `last Monday` … `last Sunday` | Previous weekday |
-| ISO date string | Parsed as-is |
-
-**Example Request (Orientation)**
-
-```json
-{
-  "timezone": "Europe/London",
-  "projectPath": "/home/user/myapp"
-}
-```
-
-**Example Response (Returning Session)**
-
-```json
-{
-  "summary": "It is 9:15 AM on Wednesday, February 25, 2026 (Europe/London, UTC+00:00). Project: /home/user/myapp. Last session: 14 hours 23 minutes ago. 3 new memories were added while offline.",
-  "time": {
-    "epochMs": 1740474900000,
-    "iso": "2026-02-25T09:15:00.000+00:00",
-    "timezone": "Europe/London",
-    "utcOffset": "+00:00",
-    "timeOfDay": "9:15 AM",
-    "date": "Wednesday, February 25, 2026",
-    "dayOfWeek": "Wednesday",
-    "isWeekend": false,
-    "weekNumber": 9
-  },
-  "projectPath": "/home/user/myapp",
-  "offlineGap": {
-    "durationMs": 51780000,
-    "durationHuman": "14 hours 23 minutes",
-    "from": "2026-02-24T18:52:00.000+00:00",
-    "to": "2026-02-25T09:15:00.000+00:00",
-    "memoriesAdded": 3
-  },
-  "recentMemories": [
-    {
-      "id": "mem-099",
-      "type": "bug_fix",
-      "content": "Fixed null pointer in user service when email is null",
-      "createdAt": "2026-02-24T22:00:00.000Z",
-      "tags": ["bugfix", "user-service"]
-    }
-  ]
-}
-```
-
-**Example Request (Date Resolution + World Clock)**
-
-```json
-{
-  "expression": "next Monday",
-  "also": ["Europe/London", "Asia/Tokyo"]
-}
-```
+| Tool | Why it matters |
+|------|----------------|
+| `context.orient` | tells the agent where it is in time and project history |
+| `context.store` | saves decisions, bug fixes, conventions, and patterns |
+| `context.recall` | retrieves relevant memories by meaning and text |
+| `context.searchCode` | searches indexed code by text, symbol, or semantic meaning |
+| `context.getCurrent` | assembles a richer context window including ghost messages |
+| `context.setup` | installs Context Fabric into supported CLIs |
 
 ---
 
-### `context.store`
-Store a memory in the fabric. The Smart Router auto-selects the optimal layer (L1/L2/L3) based on content type if you don't specify one.
+## Tool categories
 
-**Memory Types**
+### Core memory tools
+- `context.getCurrent`
+- `context.store`
+- `context.recall`
+- `context.storeBatch`
 
-| Type | Typical Layer | Use For |
-|:-----|:-------------:|:--------|
-| `decision` | L2 | Architectural choices, tech stack decisions |
-| `bug_fix` | L2 | Resolved issues and their solutions |
-| `code_pattern` | L3 | Reusable code patterns across projects |
-| `convention` | L3 | Coding standards, naming conventions |
-| `scratchpad` | L1 | Temporary notes, session-scratch |
-| `relationship` | L3 | User preferences, working relationships |
+### Orientation and code tools
+- `context.orient`
+- `context.searchCode`
 
-**Parameters**
+### CRUD tools
+- `context.get`
+- `context.update`
+- `context.delete`
+- `context.list`
 
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `type` | string | Yes | Memory type (see table above) |
-| `content` | string | Yes | Memory content (min 1 character) |
-| `metadata` | object | Yes | See metadata fields below |
-| `layer` | number | No | Force layer: `1`, `2`, or `3`. Auto-detected if omitted |
-| `ttl` | number | No | Time-to-live in seconds (for L1 only) |
-| `pinned` | boolean | No | Protect from decay/summarization |
+### Management and import/export
+- `context.summarize`
+- `context.reportEvent`
+- `context.importDocs`
+- `context.backup`
+- `context.export`
+- `context.import`
 
-**Metadata Fields**
+### Observability and setup
+- `context.metrics`
+- `context.health`
+- `context.setup`
 
-| Field | Type | Description |
-|:------|:-----|:------------|
-| `tags` | string[] | Categorization tags |
-| `title` | string | Human-readable title |
-| `confidence` | number | AI confidence 0-1 (default: 0.8) |
-| `weight` | number | Priority 1-5, default 3. Higher = more important |
-| `source` | string | `user_explicit`, `ai_inferred`, `system_auto` |
-| `projectPath` | string | Project scope |
-| `fileContext` | object | `{ path, lineStart?, lineEnd?, language? }` |
-| `codeBlock` | object | `{ code, language, filePath? }` |
-
-**Example Request**
-
-```json
-{
-  "type": "decision",
-  "content": "Use Zod for all API input validation. Schemas live in src/schemas/ alongside route handlers.",
-  "metadata": {
-    "tags": ["validation", "api", "zod"],
-    "confidence": 0.95,
-    "source": "user_explicit",
-    "projectPath": "/home/user/myapp",
-    "weight": 4
-  }
-}
-```
-
-**Example Response**
-
-```json
-{
-  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "success": true,
-  "layer": 2,
-  "pinned": false
-}
-```
+### Skill tools
+- `context.skill.create`
+- `context.skill.list`
+- `context.skill.get`
+- `context.skill.invoke`
+- `context.skill.update`
+- `context.skill.delete`
 
 ---
 
-### `context.recall`
-Hybrid search across all memory layers. Three modes: `hybrid` (FTS5 BM25 + vector cosine fused with RRF, default), `semantic` (vector-only), `keyword` (FTS5 BM25-only). Finds memories by meaning — no need for exact keyword matches.
+## Related MCP primitives
 
-**Parameters**
+Context Fabric also exposes:
 
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `query` | string | Yes | Natural language search query |
-| `sessionId` | string | Yes | Session identifier |
-| `limit` | number | No | Max results (default: 10) |
-| `threshold` | number | No | Min similarity 0-1 (default: 0.7) |
-| `mode` | string | No | `hybrid`, `semantic`, or `keyword` (default: `hybrid`) |
-| `filter` | object | No | See filter options below |
+- **5 MCP Prompts** such as `cf-orient` and `cf-search-code`
+- **6 resource views/templates** under `memory://...`
 
-**Filter Options**
-
-| Field | Type | Description |
-|:------|:-----|:------------|
-| `types` | string[] | Filter by memory types |
-| `layers` | number[] | Filter by layers: `[1]`, `[2]`, `[3]`, or mixed |
-| `tags` | string[] | Filter by tags |
-| `projectPath` | string | Filter to specific project |
-
-**Example Request**
-
-```json
-{
-  "query": "how do we handle authentication errors?",
-  "sessionId": "session-abc-123",
-  "limit": 5,
-  "threshold": 0.7,
-  "mode": "hybrid",
-  "filter": {
-    "types": ["bug_fix", "decision"],
-    "layers": [2, 3],
-    "tags": ["auth"]
-  }
-}
-```
-
-**Example Response**
-
-```json
-{
-  "results": [
-    {
-      "memory": {
-        "id": "mem-042",
-        "type": "bug_fix",
-        "content": "Fixed auth token refresh race condition by adding a mutex lock around the refresh call",
-        "metadata": { "tags": ["auth", "race-condition"], "weight": 4 },
-        "createdAt": "2026-02-20T14:30:00.000Z"
-      },
-      "similarity": 0.89,
-      "layer": 2
-    }
-  ],
-  "total": 1
-}
-```
+Those are documented here:
+- [docs/mcp-primitives.md](https://github.com/Abaddollyon/context-fabric/blob/main/docs/mcp-primitives.md)
 
 ---
 
-### `context.getCurrent`
+## Recommended learning order
 
-Get the current context window for a session — working memories, relevant memories, patterns, suggestions, and ghost messages. Supports pattern filtering by language or file path.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `sessionId` | string | Yes | Unique session identifier |
-| `currentFile` | string | No | Currently open file path |
-| `currentCommand` | string | No | Current command being executed |
-| `projectPath` | string | No | Project path for context |
-| `language` | string | No | Filter patterns by language (e.g., `typescript`) |
-| `filePath` | string | No | Filter patterns by file path |
+1. Learn `context.orient`
+2. Learn `context.store` and `context.recall`
+3. Learn `context.searchCode`
+4. Learn `context.getCurrent`
+5. Use the skill and docs-import tools once the basics are working
 
 ---
 
-## Code Tools
+## Canonical deep docs
 
-### `context.searchCode`
-Search the project's source code index. Three modes:
-- `text` — Full-text search across file contents
-- `symbol` — Find functions/classes/types by name
-- `semantic` — Natural language similarity (default)
-
-The index is built automatically on first use and stays up-to-date via file watching.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `query` | string | Yes | Search query |
-| `mode` | string | No | `text`, `symbol`, or `semantic` (default: `semantic`) |
-| `language` | string | No | Filter by language (e.g., `typescript`, `python`) |
-| `filePattern` | string | No | Glob pattern (e.g., `src/**/*.ts`) |
-| `symbolKind` | string | No | Filter symbols: `function`, `class`, `interface`, `type`, `enum`, `const`, `export`, `method` |
-| `limit` | number | No | Max results (default: 10) |
-| `threshold` | number | No | Min similarity for semantic search (default: 0.5) |
-| `includeContent` | boolean | No | Include source content (default: true) |
-
-**Supported Languages**
-
-| Tier | Languages | Extraction |
-|:-----|:----------|:-----------|
-| Tier 1 | TypeScript, JavaScript, Python, Rust, Go | Full: functions, classes, interfaces, types, enums, doc comments |
-| Tier 2 | Java, C#, Ruby, C/C++ | Functions and classes |
-
----
-
-## CRUD Tools
-
-### `context.get`
-
-Get a specific memory by ID. Searches across all layers.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `memoryId` | string | Yes | Memory ID |
-| `projectPath` | string | No | Project path |
-
----
-
-### `context.update`
-
-Update a memory's content, metadata, tags, weight, or pinned status. L1 memories cannot be updated (they're ephemeral). L3 memories are re-embedded only if content changes. Use `targetLayer` to promote a memory to a higher layer.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `memoryId` | string | Yes | Memory ID |
-| `content` | string | No | New content |
-| `metadata` | object | No | Metadata to merge |
-| `tags` | string[] | No | New tags (replaces existing) |
-| `weight` | number | No | Update weight (1-5) |
-| `pinned` | boolean | No | Pin/unpin memory |
-| `targetLayer` | number | No | Promote to layer 2 or 3 (auto-detects current layer) |
-
-> [!NOTE]
-> Promoting to L3 via `targetLayer: 3` generates an embedding vector (~50ms).
-
----
-
-### `context.delete`
-
-Delete a memory by ID. Searches across all layers.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `memoryId` | string | Yes | Memory ID |
-| `projectPath` | string | No | Project path |
-
----
-
-### `context.list`
-
-Browse memories with filters and pagination. Defaults to L2 (project) memories. Use `stats: true` to get memory store counts instead of listing memories.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `layer` | number | No | Layer: 1, 2, or 3 (default: 2) |
-| `type` | string | No | Filter by memory type |
-| `tags` | string[] | No | Filter by tags (OR logic) |
-| `limit` | number | No | Max results (default: 20) |
-| `offset` | number | No | Pagination offset (default: 0) |
-| `stats` | boolean | No | If true, return counts per layer instead of memory list |
-
----
-
-## Management Tools
-
-### `context.summarize`
-
-Condense old memories into a summary entry. Keeps databases lean over time.
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `sessionId` | string | Yes | Session identifier |
-| `layer` | number | No | Layer to summarize: 2 or 3 (default: 2) |
-| `olderThanDays` | number | No | Summarize memories older than N days (default: 30) |
-| `options` | object | Yes | `{ targetTokens, focusTypes?, includePatterns?, includeDecisions? }` |
-
----
-
-### `context.reportEvent`
-
-Report a CLI event for automatic memory capture.
-
-**Event Types**
-
-| Type | Description |
-|:-----|:------------|
-| `file_opened` | User opened a file |
-| `command_executed` | Command was run |
-| `error_occurred` | Error encountered |
-| `decision_made` | Design decision made |
-| `session_start` / `session_end` | Session boundaries |
-| `pattern_detected` | Code pattern identified |
-| `user_feedback` | Explicit user feedback |
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `event` | object | Yes | `{ type, payload, timestamp, sessionId, cliType, projectPath? }` |
-
----
-
-## Setup Tools
-
-### `context.setup`
-
-Install Context Fabric into a CLI's MCP config automatically.
-
-**Supported CLIs**
-
-| CLI | Config File |
-|:----|:------------|
-| `kimi` | `~/.kimi/mcp.json` |
-| `claude-code` | `~/.claude.json` |
-| `claude` | `claude_desktop_config.json` |
-| `opencode` | `~/.config/opencode/opencode.json` |
-| `codex` | `~/.codex/config.toml` |
-| `gemini` | `~/.gemini/settings.json` |
-| `cursor` | `~/.cursor/mcp.json` |
-| `docker` | Returns Docker snippets (no write) |
-
-**Parameters**
-
-| Parameter | Type | Required | Description |
-|:----------|:-----|:---------|:------------|
-| `cli` | string | Yes | Target CLI (see table) |
-| `serverPath` | string | No | Path to `dist/server.js` (auto-detected) |
-| `useDocker` | boolean | No | Use Docker transport (default: false) |
-| `preview` | boolean | No | Return config without writing (default: false) |
-
----
-
-## Memory Layers
-
-Context Fabric uses three memory layers:
-
-| Layer | Name | Scope | Persistence | Best For |
-|:------|:-----|:------|:------------|:---------|
-| L1 | Working | Session | Minutes-hours | Scratchpad, transient thoughts |
-| L2 | Project | Project | Months | Decisions, bug fixes, project docs |
-| L3 | Semantic | Cross-project | Permanent (decay) | Patterns, conventions, reusable knowledge |
-
-The **Smart Router** automatically assigns memories to the optimal layer based on content type, tags, and TTL.
-
----
-
-## Migration from v0.6
-
-Five tools were consolidated in v0.7.1:
-
-| Old Tool | Use Instead | How |
-|:---------|:-----------|:----|
-| `context.ghost` | `context.getCurrent` | Ghost messages are in the `ghostMessages` field |
-| `context.time` | `context.orient` | Use `expression` and `also` params |
-| `context.getPatterns` | `context.getCurrent` | Use `language` and `filePath` params |
-| `context.promote` | `context.update` | Use `targetLayer` param |
-| `context.stats` | `context.list` | Use `stats: true` |
-
----
-
-## See Also
-
-- [Home](Home) — Overview and quick start
-- [Architecture](Architecture) — System internals
-- [Memory Types](Memory-Types) — Detailed type system
+- [Full tools reference](https://github.com/Abaddollyon/context-fabric/blob/main/docs/tools-reference.md)
+- [Memory types and routing](https://github.com/Abaddollyon/context-fabric/blob/main/docs/memory-types.md)
+- [MCP primitives](https://github.com/Abaddollyon/context-fabric/blob/main/docs/mcp-primitives.md)

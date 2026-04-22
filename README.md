@@ -2,9 +2,11 @@
 
 # Context Fabric
 
-**Persistent memory for AI coding agents.** Your agent remembers everything -- across sessions, projects, and tools.
+**Local-first MCP memory for AI coding agents.**
 
-[![Version](https://img.shields.io/badge/version-0.12.0-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
+Your agent remembers decisions, patterns, project context, and what changed while you were away — across sessions, projects, and tools.
+
+[![Version](https://img.shields.io/badge/version-0.12.1-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
 [![Tests](https://img.shields.io/badge/tests-719%20passing-brightgreen?style=flat-square)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Node](https://img.shields.io/badge/node-22.5%2B-brightgreen?style=flat-square)](https://nodejs.org/)
@@ -14,50 +16,108 @@
 </div>
 
 > [!NOTE]
-> **Beta Software.** Context Fabric works and is actively used, but APIs and storage formats may change between versions. Pin your version and check the [CHANGELOG](CHANGELOG.md) before upgrading.
+> **Pre-1.0, but built for daily use.** Context Fabric is actively used, tested, and released regularly. APIs and storage formats may still evolve before 1.0, so pin versions and review the [CHANGELOG](CHANGELOG.md) before upgrading.
 
----
+## Start Here
 
-## The Problem
+- **Want to try it fast?** Go to [Quick Start](#quick-start)
+- **Need a client config?** Open [CLI Setup](docs/cli-setup.md)
+- **Want the full tool surface?** See [Tools Reference](docs/tools-reference.md)
+- **Prefer guided docs?** Browse the [Wiki](https://github.com/Abaddollyon/context-fabric/wiki)
 
-Every time an AI CLI session ends, its context vanishes. Decisions, patterns, bug fixes -- gone. Next session, you start from scratch.
+## Why it exists
 
-## The Solution
+Coding agents are great in-session and forgetful between sessions. Important context disappears when the terminal closes: decisions, debugging discoveries, codebase conventions, partial work, and the answer to "what changed since I was last here?"
 
-Context Fabric is an [MCP](https://modelcontextprotocol.io/) server that gives your AI agent a **three-layer memory system** and **time-aware orientation**. It remembers what happened, what changed while you were away, and what matters right now. No external APIs. No cloud. Everything runs locally.
+Context Fabric gives MCP-compatible coding agents a persistent memory layer that stays local, searchable, and useful.
 
-## Features
+## Who it's for
+
+- Developers using MCP-capable coding tools like Claude Code, Cursor, Codex CLI, Gemini CLI, OpenCode, or Kimi
+- Teams that want persistent agent memory without sending code and context to a hosted memory service
+- Builders who want a lightweight local memory substrate instead of wiring up a separate vector database stack
+
+## Why Context Fabric
+
+- **Local-first by design** — SQLite storage, local embeddings, Docker/local deployment, zero cloud dependency.
+- **Built for coding agents** — remembers decisions, bug fixes, conventions, code patterns, and current project state.
+- **MCP-native** — works as a real MCP server with Tools, Resources, and Prompts.
+- **Code-aware and time-aware** — semantic code search, symbol indexing, and orientation around offline gaps.
+- **Practical to adopt** — no external vector database, no API key, no hosted control plane required.
+
+## What you get
 
 ### Memory & retrieval
-- **Three-layer memory** -- Working (L1), Project (L2), Semantic (L3). Memories auto-route to the right layer.
-- **Hybrid search** -- FTS5 BM25 + vector cosine + Reciprocal Rank Fusion. FTS5 prefilter keeps recall at **<10ms p50 even at 10K memories**.
-- **Semantic recall** -- In-process vector embeddings (ONNX, fastembed). No API keys needed.
-- **Optional ANN acceleration** -- drop-in [sqlite-vec](https://github.com/asg017/sqlite-vec) support; falls back to the BM25 prefilter cleanly.
-- **Local code indexing** -- Scans source files, extracts symbols, stays fresh via file watching. FTS5-prefiltered semantic search across chunks too (v0.11.2).
-- **Time-aware orientation** -- "What happened while I was away?" Offline gap detection, timezone support, session continuity.
-- **Pattern detection** -- Auto-captures and reuses code patterns across projects.
-- **Ghost messages** -- Relevant memories surface silently via `context.getCurrent` without cluttering the conversation.
+- **Three-layer memory** — Working (L1), Project (L2), Semantic (L3). Memories auto-route to the right layer.
+- **Hybrid search** — FTS5 BM25 + vector cosine + Reciprocal Rank Fusion. FTS5 prefilter keeps recall at **<10ms p50 even at 10K memories**.
+- **Semantic recall** — in-process vector embeddings (ONNX, fastembed). No API keys needed.
+- **Optional ANN acceleration** — drop-in [sqlite-vec](https://github.com/asg017/sqlite-vec) support with graceful fallback.
+- **Local code indexing** — scans source files, extracts symbols, and stays fresh via file watching.
+- **Time-aware orientation** — "What changed while I was away?" with offline-gap detection and timezone support.
+- **Ghost messages** — relevant memories surface via `context.getCurrent` without cluttering the main workflow.
 
-### Memory intelligence (v0.11)
-- **Provenance** -- structured citation block on every memory (`sessionId`, `eventId`, `filePath`, `commitSha`, `sourceUrl`, …). Auto-stamped `capturedAt`.
-- **Dedup-on-store** -- cosine near-duplicate detection at L3 with `skip` / `merge` / `allow` strategies. Stops duplicate facts from accumulating.
-- **Bi-temporal memory** -- explicit `supersedes` linkage + `validFrom` / `validUntil` columns. Query as-of a past point in time with `recall({ asOf })`. Zep-style temporal reasoning, fully local.
+### Memory intelligence
+- **Provenance** — structured citation blocks on memories (`sessionId`, `eventId`, `filePath`, `commitSha`, `sourceUrl`, and more).
+- **Dedup-on-store** — cosine near-duplicate detection for L3 with `skip`, `merge`, or `allow` strategies.
+- **Bi-temporal memory** — `supersedes`, `validFrom`, and `validUntil` support for "what was true at that time?" reasoning.
 
-### Agent ergonomics (v0.12)
-- **Skills** -- procedural memory (`MemoryType = "skill"`) with slug, triggers, parameters, and usage stats. Six tools: `context.skill.create` / `list` / `get` / `invoke` / `update` / `delete`. Invocation is logged and reflected in list ordering.
-- **MCP Resources** -- browseable context under `memory://`: `memory://skills`, `memory://recent`, `memory://conventions`, `memory://decisions`, plus templates `memory://skill/{slug}` (Markdown) and `memory://memory/{id}` (JSON).
-- **MCP Prompts** -- slash-commands for agents: `cf-orient`, `cf-capture-decision`, `cf-review-session`, `cf-search-code`, `cf-invoke-skill`.
-- **`context.importDocs`** -- one-shot seed from `CLAUDE.md`, `AGENTS.md`, `README.md`, `CHANGELOG.md`, `ROADMAP.md`, `CONTRIBUTING.md`. Idempotent via tag-dedup.
-- **Recall-quality harness** -- `npm run bench:quality` measures recall@k + MRR against a 20-pair golden set across {0, 100, 1000} distractor pool sizes.
+### Agent ergonomics
+- **Skills** — procedural memory with slugged, invokable instruction blocks and usage tracking.
+- **MCP Resources** — browseable `memory://skills`, `memory://recent`, `memory://conventions`, `memory://decisions`, and templated resource views.
+- **MCP Prompts** — slash-command workflows like `cf-orient`, `cf-capture-decision`, `cf-review-session`, `cf-search-code`, and `cf-invoke-skill`.
+- **`context.importDocs`** — one-shot seeding from common onboarding docs like `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, and `AGENTS.md`.
+- **Recall-quality harness** — benchmark recall@k and MRR with `npm run bench:quality`.
 
 ### Operations & DX
-- **25 MCP tools** -- store, storeBatch, recall, orient, getCurrent, summarize, searchCode, CRUD (get/update/delete/list), reportEvent, setup, backup, export, import, metrics, health, importDocs, and 6 skill tools (create/list/get/invoke/update/delete).
-- **Graceful shutdown** -- SIGTERM/SIGINT drain in-flight calls, checkpoint WAL, close cleanly.
-- **Data integrity** -- startup `PRAGMA quick_check`, explicit transactions on every multi-row write, `VACUUM INTO`-based online backups.
-- **Observability** -- structured logger + `context.metrics` + `context.health` tools.
-- **Self-installing** -- ask your AI to run `context.setup` and it configures itself into any supported CLI.
-- **Docker-first** -- cross-platform `docker run --rm -i`. No Node.js required on the host.
-- **Zero external dependencies** -- all storage is SQLite (`node:sqlite`). All search local. Nothing leaves your machine.
+- **25 MCP tools** — memory CRUD, recall/orientation, code search, docs import, backup/export/import, metrics/health, and 6 skill tools.
+- **Graceful shutdown** — drains in-flight calls, checkpoints WAL, and closes cleanly.
+- **Data integrity** — startup checks, explicit multi-row transactions, and online backups.
+- **Observability** — structured logging plus `context.metrics` and `context.health`.
+- **Self-setup** — `context.setup` can install Context Fabric into supported CLIs.
+- **Docker-first** — easy `docker run --rm -i` transport with persistent named-volume storage.
+
+## Quick Start
+
+Get running in a few minutes:
+
+```bash
+# 1. Clone and build the Docker image
+
+git clone https://github.com/Abaddollyon/context-fabric.git
+cd context-fabric
+docker build -t context-fabric .
+
+# 2. Verify the server responds
+
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
+  | docker run --rm -i context-fabric
+```
+
+**3. Add it to your CLI** with the Docker transport:
+
+```bash
+docker run --rm -i -v context-fabric-data:/data/.context-fabric context-fabric
+```
+
+See [CLI Setup](docs/cli-setup.md) for copy-paste configs for all supported CLIs, or let your AI do it once Context Fabric is reachable:
+
+> *"Install and configure Context Fabric for Cursor using Docker"*
+
+<details>
+<summary><strong>Local install (without Docker)</strong></summary>
+
+Requires Node.js 22.5+:
+
+```bash
+git clone https://github.com/Abaddollyon/context-fabric.git
+cd context-fabric
+npm install
+npm run build
+```
+
+The server is at `dist/server.js`. Point your CLI MCP config at `node dist/server.js`.
+
+</details>
 
 ## Supported CLIs
 
@@ -72,72 +132,32 @@ Context Fabric is an [MCP](https://modelcontextprotocol.io/) server that gives y
 | **Claude Desktop** | `context.setup({ cli: "claude" })` | [Guide](docs/cli-setup.md#claude-desktop) |
 
 > [!TIP]
-> Skip manual config entirely. Once Context Fabric is running in **any** CLI, the AI can install itself into all the others -- see [Quick Start](#quick-start) step 3.
+> Once Context Fabric is running in one MCP-capable tool, it can usually install itself into the others through `context.setup`.
 
-## Quick Start
+## What it feels like
 
-Get running in 3 steps:
+Start a session and the agent orients itself:
 
-```bash
-# 1. Clone and build the Docker image (~2 min)
-git clone https://github.com/Abaddollyon/context-fabric.git
-cd context-fabric
-docker build -t context-fabric .
-
-# 2. Test that it works
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
-  | docker run --rm -i context-fabric
-```
-
-**3. Add to your CLI.** Point your MCP config at the Docker transport:
-
-```bash
-docker run --rm -i -v context-fabric-data:/data/.context-fabric context-fabric
-```
-
-See [CLI Setup](docs/cli-setup.md) for copy-paste configs for all 7 CLIs, or let the AI do it -- once Context Fabric is running in one CLI, tell it:
-
-> *"Install and configure Context Fabric for Cursor using Docker"*
-
-It writes the config automatically. No manual editing needed.
-
-<details>
-<summary><strong>Local install (without Docker)</strong></summary>
-
-Requires Node.js 22.5+:
-
-```bash
-git clone https://github.com/Abaddollyon/context-fabric.git
-cd context-fabric
-npm install && npm run build
-```
-
-The server is at `dist/server.js`. Point your CLI's MCP config at `node dist/server.js`.
-
-</details>
-
-## What It Looks Like
-
-Start a session. The AI calls `context.orient` and instantly knows where it is:
-
-```
+```text
 It is 9:15 AM on Wednesday, Feb 25 (America/New_York).
 Project: /home/user/myapp.
-Last session: 14 hours ago. 3 new memories added while you were away.
+Last session: 14 hours ago. 3 new memories were added while you were away.
 ```
 
-Store a decision. The AI remembers it next session, next week, across tools:
+Store a decision once:
 
 ```jsonc
-// Store
-{ "type": "decision", "content": "Use Zod for all API validation. Schemas in src/schemas/." }
-
-// Recall (semantic search -- doesn't need exact words)
-{ "query": "how do we validate inputs?" }
-// => "Use Zod for all API validation. Schemas in src/schemas/." (similarity: 0.91)
+{ "type": "decision", "content": "Use Zod for all API validation. Schemas live in src/schemas/." }
 ```
 
-No configuration. No prompting. Memories route to the right layer automatically.
+Recall it naturally later:
+
+```jsonc
+{ "query": "how do we validate inputs?" }
+// => "Use Zod for all API validation. Schemas live in src/schemas/."
+```
+
+No cloud account. No hidden service dependency. No need to re-explain the codebase every session.
 
 ## Performance
 
@@ -153,35 +173,36 @@ Numbers on a commodity dev laptop (warm run, 2026-04-21):
 
 Benchmark script: [`benchmarks/recall-latency.ts`](benchmarks/recall-latency.ts) — `npm run bench:recall`.
 
-## How It Works
+## Architecture at a glance
 
-```
-CLI (Claude Code, Cursor, etc.)
+```text
+CLI (Claude Code, Cursor, Codex, etc.)
   |
   | MCP protocol (stdio / Docker)
   v
 Context Fabric Server
-  |-- Smart Router -----> L1: Working Memory  (in-memory, session-scoped)
-  |-- Time Service        L2: Project Memory  (SQLite, per-project)
-  |                       L3: Semantic Memory  (SQLite + vector search, cross-project)
+  |-- Smart Router -----> L1: Working Memory   (in-memory, session-scoped)
+  |-- Time Service        L2: Project Memory   (SQLite, per-project)
+  |-- Code Index          L3: Semantic Memory  (SQLite + embeddings, cross-project)
 ```
 
-Memories auto-route to the right layer. Scratchpad notes go to L1 (ephemeral). Decisions and bug fixes go to L2 (persistent). Code patterns and conventions go to L3 (searchable by meaning). See [Architecture](docs/architecture.md) for the full deep dive.
+Memories auto-route to the right layer. Scratchpad notes go to L1. Decisions and bug fixes go to L2. Reusable patterns and conventions go to L3. See [Architecture](docs/architecture.md) for the full deep dive.
 
 ## Documentation
 
 | Resource | Description |
 |----------|-------------|
 | [Getting Started](docs/getting-started.md) | Installation, first run, Docker and local setup |
-| [CLI Setup](docs/cli-setup.md) | Per-CLI configuration (all 7 supported CLIs) |
-| [Tools Reference](docs/tools-reference.md) | All 25 MCP tools with full parameter docs |
-| [Skills](docs/skills.md) | Procedural memory — create, invoke, and compose reusable instruction blocks |
-| [MCP Primitives](docs/mcp-primitives.md) | Resources (`memory://...`) and Prompts (`cf-*` slash-commands) |
-| [Memory Types](docs/memory-types.md) | Type system, three layers, [smart routing](docs/memory-types.md#smart-router), [decay](docs/memory-types.md#decay-algorithm) |
-| [Configuration](docs/configuration.md) | Storage paths, TTL, embedding, environment variables |
-| [Agent Integration](docs/agent-integration.md) | System prompt instructions for automatic tool usage |
-| [Architecture](docs/architecture.md) | System internals, data flow, embedding strategy |
-| [Changelog](CHANGELOG.md) | Version history and migration notes |
+| [CLI Setup](docs/cli-setup.md) | Per-CLI configuration for all 7 supported CLIs |
+| [Tools Reference](docs/tools-reference.md) | Full docs for all 25 MCP tools |
+| [Skills](docs/skills.md) | Procedural memory — create, invoke, and compose reusable skills |
+| [MCP Primitives](docs/mcp-primitives.md) | Resources (`memory://...`) and Prompts (`cf-*`) |
+| [Memory Types](docs/memory-types.md) | Type system, layers, routing, decay, provenance, and dedup |
+| [Configuration](docs/configuration.md) | Storage paths, TTL, embedding notes, and environment variables |
+| [Agent Integration](docs/agent-integration.md) | System-prompt guidance for automatic tool usage |
+| [Architecture](docs/architecture.md) | Retrieval pipeline, internals, and performance design |
+| [Changelog](CHANGELOG.md) | Version history and upgrade notes |
+| [Wiki](https://github.com/Abaddollyon/context-fabric/wiki) | Launch-friendly guides, FAQ, troubleshooting, and setup walkthroughs |
 
 ## Contributing
 
@@ -197,6 +218,6 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get
 
 **Stop re-explaining your codebase every session.**
 
-[Get Started](docs/getting-started.md) | [View All Tools](docs/tools-reference.md) | [Report a Bug](https://github.com/Abaddollyon/context-fabric/issues)
+[Get Started](docs/getting-started.md) · [Configure a CLI](docs/cli-setup.md) · [Browse the Wiki](https://github.com/Abaddollyon/context-fabric/wiki) · [Report a Bug](https://github.com/Abaddollyon/context-fabric/issues)
 
 </div>

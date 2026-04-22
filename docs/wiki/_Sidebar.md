@@ -1,26 +1,28 @@
 # Context Fabric Wiki
 
-[Home](Home)
+[Home.md](Home.md)
 
 ---
 
-**Getting Started**
-- [Installation](Getting-Started)
-- [CLI Setup](CLI-Setup)
+**Start Here**
+- [Getting Started](Getting-Started.md)
+- [CLI Setup](CLI-Setup.md)
+- [Tools Reference](Tools-Reference.md)
 
-**Configuration**
-- [Configuration](Configuration)
-- [Environment Variables](Configuration)
-- [Storage Paths](Configuration)
+**Product & Usage**
+- [Memory Types](Memory-Types.md)
+- [Configuration](Configuration.md)
+- [Agent Integration](Agent-Integration.md)
+- [FAQ](FAQ.md)
 
-**Reference**
-- [Tools Reference](Tools-Reference)
-- [Memory Types](Memory-Types)
-- [Agent Integration](Agent-Integration)
-
-**Advanced**
-- [Architecture](Architecture)
+**Internals**
+- [Architecture](Architecture.md)
 
 **Help**
-- [FAQ](FAQ)
-- [Troubleshooting](Troubleshooting)
+- [Troubleshooting](Troubleshooting.md)
+
+---
+
+**Canonical repo docs**
+- [Repository README](https://github.com/Abaddollyon/context-fabric/blob/main/README.md)
+- [Full docs directory](https://github.com/Abaddollyon/context-fabric/tree/main/docs)

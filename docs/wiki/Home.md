@@ -1,193 +1,126 @@
 # Context Fabric
 
-**Persistent memory for AI coding agents.**
+**Local-first MCP memory for AI coding agents.**
 
-Context Fabric is an [MCP server](https://modelcontextprotocol.io/) that gives your AI agent memory across sessions, projects, and tools. No more re-explaining your codebase every time you start a new session.
+Context Fabric gives MCP-compatible coding tools persistent memory across sessions, projects, and CLIs. It is built for coding workflows: decisions, bug fixes, conventions, reusable patterns, code search, and the question every returning agent needs answered quickly: **what changed while I was away?**
 
 > [!NOTE]
-> **Beta Software.** Context Fabric is actively used and works well, but APIs and storage formats may change. Pin your version and check the [CHANGELOG](https://github.com/Abaddollyon/context-fabric/blob/main/CHANGELOG.md) before upgrading.
+> **Pre-1.0, but built for daily use.** Context Fabric is actively used, tested, and released regularly. APIs and storage formats may still evolve before 1.0, so pin versions and review the [CHANGELOG](https://github.com/Abaddollyon/context-fabric/blob/main/CHANGELOG.md) before upgrading.
 
 ---
 
-## Wiki Navigation
+## Start Here
 
-| Section | Description |
-|---------|-------------|
-| [Getting Started](Getting-Started) | Installation, first run, Docker and local setup |
-| [CLI Setup](CLI-Setup) | Configuration for all 7 supported CLIs (Claude Code, Kimi, Cursor, etc.) |
-| [Tools Reference](Tools-Reference) | All 12 MCP tools with full parameter documentation |
-| [Memory Types](Memory-Types) | Three-layer memory system, smart routing, and decay |
-| [Configuration](Configuration) | Storage paths, TTL, embedding options, environment variables |
-| [Agent Integration](Agent-Integration) | System prompt instructions for automatic tool usage |
-| [Architecture](Architecture) | System internals, data flow, embedding strategy |
+- **New to the project?** Read [Getting Started](Getting-Started.md)
+- **Need to wire it into a CLI?** Go to [CLI Setup](CLI-Setup.md)
+- **Want the feature surface quickly?** See [Tools Reference](Tools-Reference.md)
+- **Want the internals?** Open [Architecture](Architecture.md)
+- **Need the full canonical docs?** Use the repo docs linked throughout this wiki
 
 ---
 
-## Key Features
+## Why people use Context Fabric
 
-### Three-Layer Memory System
-Memories auto-route to the right layer based on content and scope:
-
-| Layer | Name | Scope | Use Case |
-|-------|------|-------|----------|
-| **L1** | Working Memory | Session | Scratchpad notes, temporary context |
-| **L2** | Project Memory | Project | Decisions, bug fixes, project-specific knowledge |
-| **L3** | Semantic Memory | Global | Code patterns, conventions, reusable knowledge |
-
-### Hybrid Search
-FTS5 BM25 + vector cosine + Reciprocal Rank Fusion. Search by keyword, meaning, or both. No API keys needed.
-
-```json
-// Store a decision
-{ "type": "decision", "content": "Use Zod for all API validation" }
-
-// Recall with natural language
-{ "query": "how do we validate inputs?" }
-// => Finds the decision even with different wording
-```
-
-### Time-Aware Orientation
-Your AI knows what happened while you were away:
-
-```
-It is 9:15 AM on Wednesday, Feb 25 (America/New_York).
-Project: /home/user/myapp.
-Last session: 14 hours ago. 3 new memories added while you were offline.
-```
-
-### Local Code Indexing
-Scans source files, extracts symbols (functions/classes/types), and stays up-to-date via file watching. Search by text, symbol name, or semantic similarity.
-
-### Ghost Messages
-Relevant memories surface silently without cluttering the conversation. Important context appears when you need it.
-
-**How Ghost Messages work in practice:**
-
-Imagine you stored this decision last week:
-```
-"Use bcrypt with cost factor 12 for password hashing.
-Do NOT use MD5 or SHA1 — they're too fast for passwords."
-```
-
-Today, you ask your AI:
-> "Add password hashing to the user registration endpoint"
-
-Before your AI responds, Context Fabric silently injects the bcrypt decision as a Ghost Message. Your AI sees it in the system context and knows exactly what to do — no need for you to remember or repeat yourself.
-
-The Ghost Message appears in the AI's context but not in your chat history. It's like having a teammate who whispers helpful reminders at just the right moment.
-
-### Pattern Detection
-Auto-captures and reuses code patterns across projects. Build up a library of solutions that follow you everywhere.
+- **Local-first** — SQLite storage, local embeddings, Docker or local deployment, no hosted service required.
+- **Built for coding agents** — remembers architecture decisions, debugging discoveries, house rules, and code patterns.
+- **MCP-native** — real MCP server with Tools, Resources, and Prompts.
+- **Code-aware** — code indexing, symbol extraction, and semantic code search.
+- **Time-aware** — orientation around session gaps and recent changes.
 
 ---
 
-## Quick Start
+## Core capabilities
 
-Get running in 3 steps:
+### Three-layer memory
 
-### 1. Clone and Build
+| Layer | Purpose | Scope |
+|------|---------|-------|
+| **L1: Working** | temporary notes and scratchpad context | session |
+| **L2: Project** | decisions, bug fixes, project-specific memory | per project |
+| **L3: Semantic** | reusable patterns, conventions, cross-project knowledge | global |
+
+### Retrieval and reasoning
+- Hybrid recall via **FTS5 BM25 + vector similarity + Reciprocal Rank Fusion**
+- Time-aware orientation and offline-gap detection
+- Provenance, dedup-on-store, and bi-temporal memory support
+- Ghost-message style context surfacing through `context.getCurrent`
+
+### Agent ergonomics
+- **25 MCP tools**
+- **5 MCP Prompts** (`cf-*` workflows)
+- **6 resource views/templates** under `memory://...`
+- **Skills** as invokable procedural memory
+- `context.setup` for supported CLIs
+
+---
+
+## Quick start
 
 ```bash
 git clone https://github.com/Abaddollyon/context-fabric.git
 cd context-fabric
 docker build -t context-fabric .
-```
 
-### 2. Test It Works
-
-```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   | docker run --rm -i context-fabric
 ```
 
-### 3. Add to Your CLI
-
-Use this Docker transport in your MCP config:
+For persistent storage when running via Docker:
 
 ```bash
 docker run --rm -i -v context-fabric-data:/data/.context-fabric context-fabric
 ```
 
-See [CLI Setup](CLI-Setup) for copy-paste configs for all supported CLIs.
-
-> **Tip:** Once Context Fabric is running in one CLI, you can ask your AI to install it into others automatically. Just say:
->
-> "Install and configure Context Fabric for Cursor using Docker"
+Full setup guide: [Getting Started](Getting-Started.md)
 
 ---
 
-## Real World Example
+## Supported CLIs
 
-Context Fabric in action with a typical development day.
+- Claude Code
+- Kimi
+- OpenCode
+- Codex CLI
+- Gemini CLI
+- Cursor
+- Claude Desktop
 
-### Morning: Starting a New Feature
-
-**You:** "Let's add OAuth with Google to the auth module"
-
-**Context Fabric steps in:**
-```
-Ghost Message: "We use Passport.js for authentication,
-   configured in /src/auth/passport.ts. Google OAuth credentials
-   are in .env.local (not committed)."
-```
-
-Your AI immediately knows the existing auth pattern and where things live. No need to dig through files.
-
-### Midday: Hitting a Snag
-
-**You:** "The OAuth callback is failing with 'redirect_uri_mismatch'"
-
-After 20 minutes of debugging, you discover the issue: the Google Cloud Console has a trailing slash in the callback URL, but your code doesn't.
-
-**You:** "Remember: Google OAuth callback URLs must match exactly,
-including trailing slashes. The console has the slash, so our code needs it too."
-
-Context Fabric stores this as an L2 (Project) memory.
-
-### Next Week: Different Project, Same Problem
-
-**You:** "Setting up OAuth for the admin dashboard"
-
-**Context Fabric:**
-```
-Ghost Message (L3 - Pattern): "OAuth callback URLs must match
-   provider settings exactly, including trailing slashes."
-```
-
-Your AI knows this pattern from the previous project and gets it right the first time.
-
-### A Month Later: Returning to the First Project
-
-**You:** (opens terminal)
-
-**Your AI automatically calls `context.orient`:**
-```
-It is 9:30 AM on Monday, March 30, 2026 (America/New_York).
-Project: /home/user/myapp.
-Last session: 3 weeks 2 days ago (since March 6).
-4 new memories were added while you were offline.
-
-Ghost Message: "OAuth is implemented but refresh tokens are
-   not being stored. See TODO in /src/auth/oauth.ts line 42."
-```
-
-You immediately know where you left off. That TODO you wrote weeks ago? Context Fabric remembered, even though you forgot.
+Manual and auto-setup details: [CLI Setup](CLI-Setup.md)
 
 ---
 
-## Links
+## Suggested reading path
 
-- [Main Repository](https://github.com/Abaddollyon/context-fabric)
-- [CHANGELOG](https://github.com/Abaddollyon/context-fabric/blob/main/CHANGELOG.md)
-- [Report Issues](https://github.com/Abaddollyon/context-fabric/issues)
-- [Contributing](https://github.com/Abaddollyon/context-fabric/blob/main/CONTRIBUTING.md)
+### If you want to try it fast
+1. [Getting Started](Getting-Started.md)
+2. [CLI Setup](CLI-Setup.md)
+3. [Troubleshooting](Troubleshooting.md)
+
+### If you want to understand the product
+1. [Tools Reference](Tools-Reference.md)
+2. [Memory Types](Memory-Types.md)
+3. [FAQ](FAQ.md)
+
+### If you want to understand the internals
+1. [Architecture](Architecture.md)
+2. [Configuration](Configuration.md)
+3. [Agent Integration](Agent-Integration.md)
 
 ---
 
-<div align="center">
+## Canonical repo docs
+
+The GitHub Wiki is the launch-friendly overview layer. The canonical deep technical docs live in the repository:
+
+- [README](https://github.com/Abaddollyon/context-fabric/blob/main/README.md)
+- [Getting Started](https://github.com/Abaddollyon/context-fabric/blob/main/docs/getting-started.md)
+- [CLI Setup](https://github.com/Abaddollyon/context-fabric/blob/main/docs/cli-setup.md)
+- [Tools Reference](https://github.com/Abaddollyon/context-fabric/blob/main/docs/tools-reference.md)
+- [Memory Types](https://github.com/Abaddollyon/context-fabric/blob/main/docs/memory-types.md)
+- [Configuration](https://github.com/Abaddollyon/context-fabric/blob/main/docs/configuration.md)
+- [Agent Integration](https://github.com/Abaddollyon/context-fabric/blob/main/docs/agent-integration.md)
+- [Architecture](https://github.com/Abaddollyon/context-fabric/blob/main/docs/architecture.md)
+
+---
 
 **Stop re-explaining your codebase every session.**
-
-[Get Started](Getting-Started)
-
-</div>

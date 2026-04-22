@@ -4,7 +4,7 @@ Having trouble? Don't worry — we'll get you back on track. This guide covers c
 
 ---
 
-## 🚑 "It Didn't Work" — Let's Figure It Out
+## First checks
 
 We know that sinking feeling when something *should* work but doesn't. Take a breath — most issues have simple fixes, and we're here to help you through them.
 
@@ -157,7 +157,7 @@ npm install --verbose 2>&1 | head -100
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' \
   | docker run --rm -i context-fabric
 
-# Should output JSON with 12 tools. If not, check server logs.
+# Should output JSON with 25 tools. If not, check server logs.
 
 # 2. Check CLI config file exists and is valid JSON
 cat ~/.kimi/mcp.json        # Kimi
@@ -177,7 +177,7 @@ node -e "JSON.parse(require('fs').readFileSync(process.argv[1]))" ~/.kimi/mcp.js
 | Path to server is relative | Use **absolute** paths: `/home/user/context-fabric/dist/server.js` |
 | Server file doesn't exist | Run `npm run build` to create `dist/server.js` |
 | CLI not restarted | Most CLIs need restart after config changes |
-| Wrong config file location | Double-check path for your CLI (see [CLI Setup](../docs/cli-setup.md)) |
+| Wrong config file location | Double-check path for your CLI (see [CLI Setup](CLI-Setup)) |
 
 **For Docker:**
 ```bash
@@ -492,7 +492,7 @@ claude mcp status
 File > Preferences > Cursor Settings > Tools & Integrations > MCP Tools
 ```
 
-Should show `context-fabric` with 12 tools.
+Should show `context-fabric` with 25 tools.
 
 ---
 
@@ -764,16 +764,16 @@ sqlite3 ~/.context-fabric/l2-project.db "SELECT id, type, substr(content, 1, 50)
 **L3 Semantic Memory:**
 ```bash
 # Location
-ls -la ~/.context-fabric/l3-semantic/memories.db
+ls -la ~/.context-fabric/l3-semantic/semantic.db
 
 # Count memories
-sqlite3 ~/.context-fabric/l3-semantic/memories.db "SELECT COUNT(*) FROM semantic_memories;"
+sqlite3 ~/.context-fabric/l3-semantic/semantic.db "SELECT COUNT(*) FROM semantic_memories;"
 
 # Check pinned status
-sqlite3 ~/.context-fabric/l3-semantic/memories.db "SELECT pinned, COUNT(*) FROM semantic_memories GROUP BY pinned;"
+sqlite3 ~/.context-fabric/l3-semantic/semantic.db "SELECT pinned, COUNT(*) FROM semantic_memories GROUP BY pinned;"
 
 # View recent memories
-sqlite3 ~/.context-fabric/l3-semantic/memories.db \
+sqlite3 ~/.context-fabric/l3-semantic/semantic.db \
   "SELECT id, type, substr(content, 1, 50), relevance_score FROM semantic_memories ORDER BY created_at DESC LIMIT 5;"
 ```
 
@@ -850,4 +850,4 @@ Every issue you report helps make Context Fabric better for everyone. Don't hesi
 
 ---
 
-[← Back to Documentation](../README.md#documentation)
+[← Back to Home](Home.md)

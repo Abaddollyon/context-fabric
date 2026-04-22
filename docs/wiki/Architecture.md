@@ -1219,4 +1219,4 @@ interface MemoryMetadata {
 
 ---
 
-*This architecture documentation covers Context Fabric through v0.7.2. For the latest updates, see the [CHANGELOG](../CHANGELOG.md).*
+*This architecture documentation describes the core system design. For the latest feature additions and release notes, see the [CHANGELOG](https://github.com/Abaddollyon/context-fabric/blob/main/CHANGELOG.md).*

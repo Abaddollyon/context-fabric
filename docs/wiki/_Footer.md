@@ -2,10 +2,10 @@
 
 <div align="center">
 
-**Context Fabric** — Persistent memory for AI coding agents
+**Context Fabric** — Local-first MCP memory for AI coding agents
 
-[GitHub](https://github.com/Abaddollyon/context-fabric) | [Documentation](Home) | [Issues](https://github.com/Abaddollyon/context-fabric/issues) | [Changelog](https://github.com/Abaddollyon/context-fabric/blob/main/CHANGELOG.md)
+[GitHub](https://github.com/Abaddollyon/context-fabric) | [Wiki Home](Home.md) | [Docs](https://github.com/Abaddollyon/context-fabric/tree/main/docs) | [Issues](https://github.com/Abaddollyon/context-fabric/issues)
 
-*MIT Licensed | 100% Offline | Zero External APIs*
+*MIT Licensed · Local-first · MCP-native · Built for coding workflows*
 
 </div>

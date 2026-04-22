@@ -32,7 +32,7 @@ Unlike cloud-based memory services, Context Fabric never sends your code or memo
 
 ### Is it free?
 
-**Yes.** Context Fabric is [MIT licensed](../LICENSE). You can use it for personal projects, commercial work, or even fork and modify it. No usage limits, no API keys, no hidden costs.
+**Yes.** Context Fabric is [MIT licensed](https://github.com/Abaddollyon/context-fabric/blob/main/LICENSE). You can use it for personal projects, commercial work, or even fork and modify it. No usage limits, no API keys, no hidden costs.
 
 ### Does it work offline?
 
@@ -41,7 +41,7 @@ Unlike cloud-based memory services, Context Fabric never sends your code or memo
 - All storage is local SQLite databases
 - Embeddings run in-process (ONNX runtime)
 - No cloud dependencies or API calls
-- Works on airplanes, in bunkers, behind air-gapped networks
+- Works on airplanes and inside air-gapped or restricted networks
 
 The only time you need internet is to clone the repository and build the Docker image.
 
@@ -94,7 +94,7 @@ To set up a new CLI, either:
    "Install and configure Context Fabric for Cursor using Docker"
    ```
 
-2. **Manual** – Copy the config from [CLI Setup](../docs/cli-setup.md) into the appropriate file for your new CLI.
+2. **Manual** – Copy the config from [CLI Setup](CLI-Setup.md) into the appropriate file for your new CLI.
 
 Your project memories (L2) and semantic memories (L3) will be immediately available. Working memories (L1) are session-specific and don't persist anyway.
 
@@ -288,8 +288,8 @@ All data lives in `~/.context-fabric/` (or `$CONTEXT_FABRIC_DIR` if set):
 ~/.context-fabric/
 ├── config.yaml           # Your configuration
 ├── l2-project.db         # L2 project memories (SQLite)
-├── l3-semantic/          # L3 semantic memories
-│   └── memories.db       # Embeddings + metadata
+├── l3-semantic/
+│   └── semantic.db       # Embeddings + metadata
 └── backups/              # Automatic backups
 ```
 
@@ -399,10 +399,10 @@ npm test
 - Documentation improvements
 - Additional language support for code indexing
 
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for detailed guidelines.
+See [CONTRIBUTING.md](https://github.com/Abaddollyon/context-fabric/blob/main/CONTRIBUTING.md) for detailed guidelines.
 
 **Before submitting a PR:**
-- All 253+ tests should pass
+- Run `npm test` and ensure the full suite passes locally
 - Follow the existing TypeScript strict mode style
 - Keep dependencies minimal (every new dep needs justification)
 - Add tests for new functionality
@@ -491,4 +491,4 @@ SqliteError: unable to open database file
 
 *Last updated: February 2026*
 
-For more details, see the [full documentation](../docs/) or [open an issue](https://github.com/Abaddollyon/context-fabric/issues).
+For more details, see the [full documentation](https://github.com/Abaddollyon/context-fabric/tree/main/docs) or [open an issue](https://github.com/Abaddollyon/context-fabric/issues).
