@@ -9,7 +9,7 @@ Context Fabric tools appear in your AI's tool list via MCP, but agents need expl
 
 ## How It Works
 
-When Context Fabric is connected, your AI sees 12 MCP tools in its available tool list. Each tool has a description, but AI agents work best with explicit guidance in their system prompt or project-level config.
+When Context Fabric is connected, your AI sees **25 MCP tools** in its available tool list. Each tool has a description, but AI agents work best with explicit guidance in their system prompt or project-level config.
 
 ### Integration Model
 
@@ -121,7 +121,7 @@ Store these memory types when discovered:
 - Use `context.update` to correct or expand stored memories; use `targetLayer` to promote
 - Use `context.delete` to remove outdated memories
 
-### Weight System (v0.5.3+)
+### Memory priority
 Memories accept `metadata.weight` (1-5, default 3):
 - `weight: 5` → 1.67× boost for critical decisions and non-obvious gotchas
 - `weight: 4` → 1.33× boost for important patterns
@@ -137,7 +137,7 @@ Memories accept `metadata.weight` (1-5, default 3):
 
 ## Per-Tool Guidance
 
-Reference table for when to call each of the 12 tools:
+Reference table for when to call the core day-to-day tools:
 
 | Tool | When to Call | Frequency | Key Parameters |
 |------|-------------|-----------|----------------|
@@ -253,7 +253,7 @@ Before implementing features or fixes, call `context.recall` to check for:
 - Use `context.update` to correct or improve memories
 - Use `context.delete` to remove outdated entries
 
-## Weight Priority (v0.5.3+)
+## Memory priority
 
 When storing critical decisions, set `metadata.weight: 5` to ensure they surface first in recall.
 ```
@@ -287,7 +287,7 @@ Call `context.orient` to ground yourself in time and project context.
 - Use `context.recall` before making changes
 - Use `context.searchCode` for code exploration (modes: symbol, text, semantic)
 
-### Weight System
+### Memory priority
 Set `metadata.weight: 5` for critical architectural decisions that must not be forgotten.
 ```
 
@@ -357,6 +357,6 @@ L2 memories are automatically scoped to the project path. You don't need to manu
 
 ## See Also
 
-- [Tools Reference](https://github.com/Abaddollyon/context-fabric/blob/main/docs/tools-reference.md) — All 12 tools with full parameter docs
+- [Tools Reference](https://github.com/Abaddollyon/context-fabric/blob/main/docs/tools-reference.md) — All 25 tools with full parameter docs
 - [CLI Setup](https://github.com/Abaddollyon/context-fabric/blob/main/docs/cli-setup.md) — Per-CLI configuration
 - [Memory Types](https://github.com/Abaddollyon/context-fabric/blob/main/docs/memory-types.md) — Smart routing, decay, and layer system
