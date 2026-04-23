@@ -7,7 +7,7 @@ import { SemanticMemoryLayer } from '../../src/layers/semantic.js';
 
 // Match the existing pattern in tests/integration/engine.test.ts.
 const hasEmbeddingModel = existsSync(
-  resolve('local_cache', 'fast-bge-small-en', 'tokenizer.json'),
+  resolve('local_cache', 'fast-bge-small-en-v1.5', 'tokenizer.json'),
 );
 
 describe('SemanticMemoryLayer.recallPrefiltered (v0.8)', () => {

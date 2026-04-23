@@ -274,7 +274,7 @@ export class CodeIndex {
     const threshold = opts.threshold ?? 0.5;
     const poolSize = Math.max(limit * 10, 200);
 
-    const queryEmbedding = await this.embeddingService.embed(query);
+    const queryEmbedding = await this.embeddingService.embedQuery(query);
 
     // Try BM25 prefilter pool first.
     let rows: ChunkRow[] = [];
@@ -388,7 +388,7 @@ export class CodeIndex {
     if (this.embeddingService && chunks.length > 0) {
       try {
         const chunkTexts = chunks.map(c => c.header + c.content);
-        embeddings = await this.embeddingService.embedBatch(chunkTexts);
+        embeddings = await this.embeddingService.embedPassageBatch(chunkTexts);
       } catch (err) {
         console.warn('[ContextFabric] Embedding batch failed for', relativePath, '— storing chunks without embeddings:', err);
         embeddings = chunks.map(() => []);

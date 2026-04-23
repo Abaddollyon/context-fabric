@@ -1,11 +1,85 @@
 // Wrapper around fastembed-js for consistent embeddings
 
-import { FlagEmbedding, EmbeddingModel } from 'fastembed';
+import { FlagEmbedding, EmbeddingModel, ExecutionProvider } from 'fastembed';
 
 const MAX_CACHE_SIZE = 10_000;
 
 /**
- * Process-wide cache of loaded ONNX models keyed by `${modelName}|${cacheDir}`.
+ * Resolve the list of ONNX execution providers from the `CONTEXT_FABRIC_EMBED_EP`
+ * env var. Accepts a comma-separated list of provider names (case-insensitive):
+ *
+ *   cpu                (default)
+ *   cuda               (requires CUDA 12 runtime + cuBLAS + cuDNN on LD_LIBRARY_PATH)
+ *   cuda,cpu           (CUDA with graceful CPU fallback on session init failure)
+ *
+ * Unknown names are dropped with a warning. An empty/invalid env var falls back
+ * to `[CPU]`.
+ */
+function resolveExecutionProviders(): ExecutionProvider[] {
+  const raw = process.env.CONTEXT_FABRIC_EMBED_EP;
+  if (!raw || !raw.trim()) return [ExecutionProvider.CPU];
+
+  const out: ExecutionProvider[] = [];
+  const known: Record<string, ExecutionProvider> = {
+    cpu: ExecutionProvider.CPU,
+    cuda: ExecutionProvider.CUDA,
+  };
+  for (const rawName of raw.split(',')) {
+    const name = rawName.trim().toLowerCase();
+    if (!name) continue;
+    const resolved = known[name];
+    if (resolved) {
+      out.push(resolved);
+    } else {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[embedding] Unknown execution provider '${name}' in CONTEXT_FABRIC_EMBED_EP — ignoring.`,
+      );
+    }
+  }
+  return out.length > 0 ? out : [ExecutionProvider.CPU];
+}
+
+/**
+ * Resolve the default embedding model from `CONTEXT_FABRIC_EMBED_MODEL`.
+ * Accepts (case-insensitive) any enum key exported by fastembed's
+ * `EmbeddingModel`, e.g. `BGESmallEN`, `BGESmallENV15`, `BGEBaseEN`,
+ * `BGEBaseENV15`, `AllMiniLML6V2`, `MLE5Large`.
+ *
+ * Notes:
+ *  - bge-large-en-v1.5 is NOT shipped by fastembed-js (the package only
+ *    ships base-size BGE models). To use a larger encoder, wire an
+ *    alternative loader (e.g. @huggingface/transformers).
+ *  - Changing the model changes the embedding dimension, which is baked
+ *    into the sqlite-vec virtual table. Always use a fresh L3 DB when
+ *    switching models.
+ */
+function resolveEmbeddingModel(): EmbeddingModel {
+  const raw = process.env.CONTEXT_FABRIC_EMBED_MODEL;
+  if (!raw || !raw.trim()) return EmbeddingModel.BGESmallENV15;
+  const key = raw.trim();
+  // Build a case-insensitive lookup of the enum keys that produce non-numeric values.
+  const table = Object.entries(EmbeddingModel)
+    .filter(([k, v]) => typeof v === 'string' && isNaN(Number(k)))
+    .reduce<Record<string, EmbeddingModel>>((acc, [k, v]) => {
+      acc[k.toLowerCase()] = v as EmbeddingModel;
+      return acc;
+    }, {});
+  const resolved = table[key.toLowerCase()];
+  if (!resolved) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[embedding] Unknown embedding model '${key}' in CONTEXT_FABRIC_EMBED_MODEL — ` +
+        `falling back to BGESmallENV15. Valid names: ${Object.keys(table).join(', ')}`,
+    );
+    return EmbeddingModel.BGESmallENV15;
+  }
+  return resolved;
+}
+
+/**
+ * Process-wide cache of loaded ONNX models keyed by
+ * `${modelName}|${cacheDir}|${executionProviders}`.
  *
  * The ONNX runtime load is the single heaviest cost in the server (~250ms
  * cold + ~80ms model tensor parse). Previously every `SemanticMemoryLayer`
@@ -23,15 +97,65 @@ function getOrLoadModel(
   modelName: EmbeddingModel,
   cacheDir: string | undefined,
 ): Promise<FlagEmbedding> {
-  const key = `${modelName}|${cacheDir ?? ''}`;
+  const executionProviders = resolveExecutionProviders();
+  const key = `${modelName}|${cacheDir ?? ''}|${executionProviders.join(',')}`;
   let p = modelCache.get(key);
   if (!p) {
-    p = FlagEmbedding.init({ model: modelName, cacheDir });
+    p = FlagEmbedding.init({ model: modelName, cacheDir, executionProviders });
     modelCache.set(key, p);
     // On failure, drop the rejected promise so the next caller can retry.
     p.catch(() => modelCache.delete(key));
   }
   return p;
+}
+
+/**
+ * Per-model prefix pair applied at encode time.
+ *
+ * Retrieval models are trained with asymmetric encoders: queries and
+ * passages get different instruction prefixes so the model can encode
+ * them into the same space despite their structural asymmetry
+ * (e.g. a short question vs a long paragraph).
+ *
+ * Using the wrong prefix (or no prefix when one was trained in) collapses
+ * retrieval quality — we saw an 8 nDCG@10-point regression on BEIR FiQA
+ * when passages had no prefix and queries had no prefix, even though they
+ * were at least *consistent*. The published bge-base-en-v1.5 numbers on
+ * FiQA (0.406) assume the `"Represent this sentence…"` query prefix.
+ *
+ * Sources:
+ *   - BGE family: https://huggingface.co/BAAI/bge-small-en-v1.5#usage
+ *     (query prefix only; passages have no prefix)
+ *   - E5 family:  https://huggingface.co/intfloat/multilingual-e5-large
+ *     (`"query: "` and `"passage: "` on both sides)
+ *   - MiniLM (symmetric): https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2
+ *     (no prefixes — same encoder for queries and passages)
+ */
+interface ModelPrefixes {
+  readonly query: string;
+  readonly passage: string;
+}
+
+function prefixesFor(model: EmbeddingModel): ModelPrefixes {
+  switch (model) {
+    case EmbeddingModel.BGESmallEN:
+    case EmbeddingModel.BGESmallENV15:
+    case EmbeddingModel.BGEBaseEN:
+    case EmbeddingModel.BGEBaseENV15:
+    case EmbeddingModel.BGESmallZH:
+      // BGE is asymmetric: instruction on the query side only.
+      return {
+        query: 'Represent this sentence for searching relevant passages: ',
+        passage: '',
+      };
+    case EmbeddingModel.MLE5Large:
+      // E5 family uses symmetric `query:` / `passage:` tags.
+      return { query: 'query: ', passage: 'passage: ' };
+    case EmbeddingModel.AllMiniLML6V2:
+    default:
+      // Symmetric sentence-transformer: no prefixes.
+      return { query: '', passage: '' };
+  }
 }
 
 export class EmbeddingService {
@@ -43,8 +167,8 @@ export class EmbeddingService {
   private initFailed: boolean = false;
   private timeoutMs: number;
 
-  constructor(modelName: EmbeddingModel = EmbeddingModel.BGESmallEN, timeoutMs = 30_000) {
-    this.modelName = modelName;
+  constructor(modelName?: EmbeddingModel, timeoutMs = 30_000) {
+    this.modelName = modelName ?? resolveEmbeddingModel();
     this.timeoutMs = timeoutMs;
   }
 
@@ -232,6 +356,57 @@ export class EmbeddingService {
     }
 
     return results as number[][];
+  }
+
+  /**
+   * Embed a retrieval **query** — applies the model's query-side instruction
+   * prefix (see `prefixesFor`). Use this whenever the text is a question
+   * or search term that will be compared against previously-stored passages.
+   *
+   * Caches are keyed on the *prefixed* text so query and passage embeddings
+   * of the same raw string never collide in the LRU.
+   *
+   * For symmetric models (AllMiniLML6V2) the prefix is empty, making this
+   * method behaviorally identical to `embed()`.
+   */
+  async embedQuery(text: string): Promise<number[]> {
+    const { query } = prefixesFor(this.modelName);
+    return this.embed(query + text);
+  }
+
+  /**
+   * Embed an array of **queries** with the model's query-side prefix applied
+   * to each item. See `embedQuery` for motivation.
+   */
+  async embedQueryBatch(texts: string[]): Promise<number[][]> {
+    const { query } = prefixesFor(this.modelName);
+    if (!query) return this.embedBatch(texts);
+    return this.embedBatch(texts.map((t) => query + t));
+  }
+
+  /**
+   * Embed a **passage / document** — applies the model's passage-side prefix
+   * (empty for BGE, `"passage: "` for E5). Doc-ingest paths should route
+   * through this method rather than calling `embed()` directly so we stay
+   * consistent with the encoder's training regime.
+   *
+   * For BGE models this is behaviorally identical to `embed()` (empty
+   * prefix), but we keep the method so callers express intent and we can
+   * safely swap encoders later without touching ingest code.
+   */
+  async embedPassage(text: string): Promise<number[]> {
+    const { passage } = prefixesFor(this.modelName);
+    if (!passage) return this.embed(text);
+    return this.embed(passage + text);
+  }
+
+  /**
+   * Batch variant of `embedPassage`. Use on the hot ingest path.
+   */
+  async embedPassageBatch(texts: string[]): Promise<number[][]> {
+    const { passage } = prefixesFor(this.modelName);
+    if (!passage) return this.embedBatch(texts);
+    return this.embedBatch(texts.map((t) => passage + t));
   }
 
   /**

@@ -18,7 +18,7 @@ import {
 
 /** Skip L3 tests when the ONNX embedding model isn't available (e.g. CI) */
 const hasEmbeddingModel = existsSync(
-  resolve('local_cache', 'fast-bge-small-en', 'tokenizer.json')
+  resolve('local_cache', 'fast-bge-small-en-v1.5', 'tokenizer.json')
 );
 
 describe('End-to-End: CLI Session Flow', () => {

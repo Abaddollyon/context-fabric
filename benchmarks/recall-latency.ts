@@ -22,7 +22,7 @@ import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { SemanticMemoryLayer } from '../dist/layers/semantic.js';
 
-const HAS_MODEL = existsSync(resolve('local_cache', 'fast-bge-small-en', 'tokenizer.json'));
+const HAS_MODEL = existsSync(resolve('local_cache', 'fast-bge-small-en-v1.5', 'tokenizer.json'));
 if (!HAS_MODEL) {
   console.error('Embedding model cache not found — skipping bench.');
   process.exit(0);

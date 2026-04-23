@@ -96,14 +96,22 @@ export function tryLoadSqliteVec(db: DatabaseSync, dim: number): SqliteVecStatus
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   };
 
+  // sqlite-vec's vec0 virtual table rejects non-integer primary keys, and
+  // the node:sqlite binding coerces plain JS numbers to REAL (doubles). So
+  // rowids must be passed as BigInt for vec0 to accept them. See
+  // https://github.com/asg017/sqlite-vec/issues / "Only integers are
+  // allowed for primary key values on vec_items".
+  const toRowidBig = (rowid: number | bigint): bigint =>
+    typeof rowid === 'bigint' ? rowid : BigInt(Math.trunc(rowid));
+
   return {
     loaded: true,
     dim,
     upsert(rowid, embedding) {
-      stmtUpsert.run(rowid, toBuffer(embedding));
+      stmtUpsert.run(toRowidBig(rowid), toBuffer(embedding));
     },
     remove(rowid) {
-      stmtRemove.run(rowid);
+      stmtRemove.run(toRowidBig(rowid));
     },
     knn(queryEmbedding, k) {
       const rows = stmtKnn.all(toBuffer(queryEmbedding), k) as Array<{

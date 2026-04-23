@@ -1,6 +1,6 @@
 {
   "name": "context-fabric",
-  "version": "0.12.1",
+  "version": "0.13.0",
   "description": "Local-first MCP memory server for AI coding agents with semantic search, code indexing, and time-aware orientation.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,7 +23,12 @@
     "test:watch:integration": "vitest tests/integration",
     "test:watch:e2e": "vitest tests/e2e",
     "bench": "tsc && node --experimental-strip-types benchmarks/recall-latency.ts",
-    "bench:quality": "tsc && node --experimental-strip-types benchmarks/recall-quality.ts"
+    "bench:quality": "tsc && node --experimental-strip-types benchmarks/recall-quality.ts",
+    "bench:beir": "tsc && node --experimental-strip-types benchmarks/public/beir.ts",
+    "bench:beir:scifact": "tsc && node --experimental-strip-types benchmarks/public/beir.ts scifact",
+    "bench:beir:fiqa": "tsc && node --experimental-strip-types benchmarks/public/beir.ts fiqa",
+    "bench:longmemeval:s": "tsc && node --experimental-strip-types benchmarks/public/longmemeval-s.ts",
+    "bench:public": "scripts/bench-public.sh all"
   },
   "repository": {
     "type": "git",
@@ -54,6 +59,7 @@
     "@modelcontextprotocol/sdk": "^1.0.4",
     "fastembed": "^1.14.4",
     "js-yaml": "^4.1.0",
+    "sqlite-vec": "^0.1.9",
     "uuid": "^9.0.1",
     "zod": "^3.22.4"
   },

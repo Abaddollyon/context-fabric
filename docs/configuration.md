@@ -53,13 +53,13 @@ ttl:
   l3DecayThreshold: 0.2
 
 # ── Embedding ────────────────────────────────────────────────────────────────
-# ── Embedding ─────────────────────────────────────────────────────────────────────────
-# Note: these keys are reserved for future multi-model support. The current
-# runtime always loads `bge-small-en` (384-d) via fastembed-js regardless of
-# what you put here. See the Embedding section below.
+# Runtime defaults to `bge-small-en-v1.5` (384-d) via fastembed-js. Override
+# with the `CONTEXT_FABRIC_EMBED_MODEL` env var (see the Env vars table below
+# for valid names). The `model` key here is legacy/ignored pending full
+# multi-model routing through the config file.
 embedding:
-  model: "Xenova/all-MiniLM-L6-v2"   # legacy/ignored — see note above
-  dimension: 384                       # matches bge-small-en
+  model: "Xenova/all-MiniLM-L6-v2"   # legacy/ignored — use CONTEXT_FABRIC_EMBED_MODEL instead
+  dimension: 384                       # matches bge-small-en / bge-small-en-v1.5
   batchSize: 32
   timeoutMs: 30000                     # max ms per embed() call, prevents ONNX hangs
 # ── Context Window ───────────────────────────────────────────────────────────
@@ -89,8 +89,10 @@ Environment variables override a subset of runtime behavior. Useful for Docker d
 | `CONTEXT_FABRIC_HOME` | `~/.context-fabric` | Root storage directory for config, L2, and L3 databases |
 | `CONTEXT_FABRIC_LOG_LEVEL` | `info` | Log verbosity: `debug`, `info`, `warn`, `error` |
 | `CONTEXT_FABRIC_DEFAULT_PROJECT` | *(cwd)* | Fallback `projectPath` for primitives that don't take one (MCP Resources, Prompts) and for tool calls that omit `projectPath` |
+| `CONTEXT_FABRIC_EMBED_MODEL` | `BGESmallENV15` | Embedding model. Accepts any case-insensitive key from fastembed's `EmbeddingModel` enum (`BGESmallEN`, `BGESmallENV15`, `BGEBaseEN`, `BGEBaseENV15`, `MLE5Large`, `AllMiniLML6V2`, `BGESmallZH`). Query/passage instruction prefixes are applied automatically per model family. Changing this changes the embedding dimension — always use a fresh L3 DB when switching models |
+| `CONTEXT_FABRIC_EMBED_EP` | `cpu` | ONNX Runtime execution providers. Comma-separated, case-insensitive. Accepts `cpu`, `cuda`, or fallback chains like `cuda,cpu`. CUDA requires CUDA 12 runtime libraries on `LD_LIBRARY_PATH` — see [GPU inference](#gpu-inference-optional) |
 | `FASTEMBED_CACHE_PATH` | *(auto)* | ONNX model cache directory. Auto-set inside the Docker image so the model is baked in |
-| `CF_DISABLE_SQLITE_VEC` | *(unset)* | Set to `1` to force the FTS5 prefilter even when the optional `sqlite-vec` extension is installed. See [sqlite-vec](#sqlite-vec-optional-ann-acceleration) |
+| `CF_DISABLE_SQLITE_VEC` | *(unset)* | Set to `1` to force the FTS5 prefilter even when `sqlite-vec` is loaded. See [sqlite-vec](#sqlite-vec-bundled-ann-acceleration) |
 
 > [!TIP]
 > Set `CONTEXT_FABRIC_LOG_LEVEL=debug` to see detailed routing decisions, embedding operations, and layer queries. Useful for troubleshooting.
@@ -159,13 +161,13 @@ docker run --rm -v context-fabric-data:/data alpine tar czf - /data \
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `model` | string | `Xenova/all-MiniLM-L6-v2` | **Legacy / not wired to the runtime.** The current engine always uses `bge-small-en` regardless of this value. Reserved for future multi-model support |
-| `dimension` | number | `384` | Embedding vector dimensions (matches `bge-small-en`) |
+| `model` | string | `Xenova/all-MiniLM-L6-v2` | **Legacy / not wired to the runtime.** To change the embedder use the `CONTEXT_FABRIC_EMBED_MODEL` environment variable (see above). Reserved for future multi-model support via the yaml file |
+| `dimension` | number | `384` | Embedding vector dimensions (matches `bge-small-en` / `bge-small-en-v1.5`). For `bge-base-en-v1.5` this is 768 |
 | `batchSize` | number | `32` | Batch size for embedding generation |
 | `timeoutMs` | number | `30000` | Max milliseconds for a single `embed()` call. Prevents ONNX from hanging the MCP process |
 
 > [!IMPORTANT]
-> The runtime ships with **`bge-small-en`** (384 dimensions, ONNX via `fastembed-js`, in-process). The `embedding.model` key is preserved in `config.yaml` for backwards compatibility but is currently ignored. When multi-model support lands it will respect this value.
+> The runtime defaults to **`bge-small-en-v1.5`** (384 dimensions, ONNX via `fastembed-js`, in-process). Swap it via `CONTEXT_FABRIC_EMBED_MODEL=BGEBaseENV15` (etc.) — query/passage instruction prefixes are applied automatically per model family, no config changes required. The `embedding.model` yaml key is preserved for backwards compatibility but is currently ignored.
 
 ### `context`
 
@@ -177,37 +179,50 @@ docker run --rm -v context-fabric-data:/data alpine tar czf - /data \
 | `maxSuggestions` | number | `5` | Max suggestions in context window |
 | `maxGhostMessages` | number | `5` | Max ghost messages in context window |
 
-## sqlite-vec (optional ANN acceleration)
+## sqlite-vec (bundled ANN acceleration)
 
-For L3 memory stores under ~50K rows, Context Fabric's default FTS5 prefilter + in-process cosine scan is already sub-10ms at p50 and requires zero native dependencies. For larger stores, you can opt into [`sqlite-vec`](https://github.com/asg017/sqlite-vec) — a loadable SQLite extension that provides ANN-accelerated vector search.
+Since v0.13, [`sqlite-vec`](https://github.com/asg017/sqlite-vec) ships as a regular dependency. The package provides prebuilt loadable extensions for `linux-{x64,arm64}`, `darwin`, and `win32`, so every `npm install` / `docker build` produces an engine that uses ANN-accelerated vector search by default. If the extension fails to attach on your platform (sandboxed environments, hardened SQLite builds), Context Fabric logs a one-line warning and falls back to the FTS5-prefiltered cosine path with no behavioural changes.
 
-### When it matters
+### What you get
 
-| L3 row count | Default path (FTS5 prefilter) | With `sqlite-vec` |
-|--------------|:-----------------------------:|:-----------------:|
-| up to ~10K | ~8ms p50 | sub-millisecond |
-| 10K–50K | ~8–30ms p50 | sub-millisecond |
+| L3 row count | Default path (FTS5 prefilter) | With `sqlite-vec` (default) |
+|--------------|:-----------------------------:|:---------------------------:|
+| up to ~10K | ~8 ms p50 | sub-millisecond |
+| 10K–50K | ~8–30 ms p50 | sub-millisecond |
 | 50K+ | degrades linearly | sub-millisecond |
 
-Most users never need to install it. Reach for it only if `context.metrics` shows consistently slow L3 recall.
+On the BEIR FiQA benchmark (57,638 docs) enabling `sqlite-vec` cut query p50 from **2,895 ms to 91 ms** — a 32× speedup without any quality regression.
 
-### Install
+### Force the FTS5 fallback
 
-```bash
-npm i sqlite-vec
-```
-
-That's it. On next startup the engine detects the module, loads the extension into both SQLite handles, and opts into the vec-backed recall path. No config changes required.
-
-### Disable or force fallback
-
-If you have `sqlite-vec` installed but want to benchmark the pure-JS path, or if extension loading fails on your platform:
+If you want to benchmark the pure-JS path or `sqlite-vec` misbehaves on your platform:
 
 ```bash
 CF_DISABLE_SQLITE_VEC=1 node dist/server.js
 ```
 
-The engine falls back cleanly to the FTS5 prefilter regardless — if `sqlite-vec` can't be loaded (Windows without proper build tools, sandboxed environments), you get a one-line warning and the default code path.
+## GPU inference (optional)
+
+Context Fabric embeds with ONNX Runtime via `fastembed-js`. By default that uses the CPU execution provider. On NVIDIA hardware with CUDA 12 runtime libraries available, setting `CONTEXT_FABRIC_EMBED_EP=cuda` switches to the CUDA execution provider and delivers **~30× the ingest throughput** (measured: 5.9 docs/s CPU → 170+ docs/s on an RTX 3060 12 GB).
+
+The CUDA EP library is already shipped inside `node_modules/onnxruntime-node/bin/napi-v3/linux/x64/libonnxruntime_providers_cuda.so`; only the CUDA 12 runtime stack needs to be visible to `ld.so`. Use the bundled helper to drop the minimal set into a project-local directory (~1 GB, does not touch system CUDA):
+
+```bash
+scripts/setup-gpu.sh           # pip-install CUDA 12 wheels into .cuda-libs/
+scripts/setup-gpu.sh --check   # verify
+```
+
+Then any command can be run GPU-accelerated via `scripts/bench-gpu.sh`:
+
+```bash
+scripts/bench-gpu.sh bench:beir:scifact
+scripts/bench-gpu.sh bench:longmemeval:s
+scripts/bench-gpu.sh -- node dist/server.js       # arbitrary command after `--`
+```
+
+`bench-gpu.sh` sets `LD_LIBRARY_PATH`, `CONTEXT_FABRIC_EMBED_EP=cuda`, and bumps `BENCH_INGEST_BATCH` to 128 (the 3060's attention ceiling).
+
+**Fallback behaviour.** Setting `CONTEXT_FABRIC_EMBED_EP=cuda,cpu` tells ONNX to prefer CUDA but gracefully fall back to CPU if CUDA can't initialise (missing libs, no GPU). This is the recommended setting for portable deployments where the same image might run on heterogeneous hardware.
 
 ---
 

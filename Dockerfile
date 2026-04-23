@@ -45,7 +45,10 @@ RUN mkdir -p /data/.context-fabric
 COPY local_cache /app/models
 ENV FASTEMBED_CACHE_PATH=/app/models
 
-# --- Production dependencies (pure JS, no native modules) ---
+# --- Production dependencies (pure JS, no native compilation required) ---
+# Includes sqlite-vec as a regular dep — the package ships prebuilt
+# extension binaries for linux-{x64,arm64} / darwin / win32 and loads
+# via DatabaseSync.loadExtension. No build tools needed.
 COPY --from=builder /app/package.json ./
 RUN npm install --omit=dev
 
