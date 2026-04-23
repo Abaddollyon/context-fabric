@@ -2,11 +2,11 @@
 # https://smithery.ai/docs/registry/smithery-yaml
 
 name: context-fabric
-version: 0.12.0
+version: 0.13.0
 description: |
   MCP server for agentic CLI memory and time-aware orientation. Provides a
   three-layer memory architecture (working / project / semantic), hybrid
-  search (FTS5 BM25 + vector cosine + RRF, optionally accelerated by
+  search (FTS5 BM25 + vector cosine + RRF, ANN-accelerated by bundled
   sqlite-vec), bi-temporal reasoning with supersession, structured
   provenance, cosine near-duplicate detection on store, procedural
   memory ("skills"), MCP Resources and Prompts, a code index with
@@ -15,6 +15,9 @@ description: |
   Integrates with Kimi, Claude Code, OpenCode, Codex, Gemini CLI, Cursor,
   and Claude Desktop. Fully local — no API keys required. Runs locally
   (Node.js 22.5+) or via Docker (cross-platform, zero host dependencies).
+
+  v0.13 ships publicly reproducible retrieval numbers: nDCG@10 0.744 on
+  BEIR SciFact, 0.380 on BEIR FiQA, Hit@5 0.952 on LongMemEval_S.
 
 homepage: https://github.com/Abaddollyon/context-fabric
 license: MIT
@@ -44,16 +47,28 @@ commands:
     command: npm run build
 
   test:
-    description: Run test suite (719 tests)
+    description: Run test suite
     command: npm test
 
   bench:recall:
     description: Benchmark L3 recall latency (1K / 10K memories)
-    command: npm run bench:recall
+    command: npm run bench
 
   bench:quality:
     description: Measure recall@k and MRR against the golden query set
     command: npm run bench:quality
+
+  bench:beir:scifact:
+    description: BEIR SciFact — 5,183 docs, 300 queries. Reports nDCG@10 / Recall@100 / MRR@10.
+    command: npm run bench:beir:scifact
+
+  bench:beir:fiqa:
+    description: BEIR FiQA-2018 — 57,638 docs, 648 queries. Reports nDCG@10 / Recall@100 / MRR@10.
+    command: npm run bench:beir:fiqa
+
+  bench:longmemeval:s:
+    description: LongMemEval_S retrieval-only — 500 questions, Hit@k / Recall@k by question type.
+    command: npm run bench:longmemeval:s
 
 env:
   - name: CONTEXT_FABRIC_HOME
@@ -74,8 +89,18 @@ env:
     description: Project path used when a tool call omits projectPath
     required: false
 
+  - name: CONTEXT_FABRIC_EMBED_MODEL
+    description: Embedding model. Any fastembed EmbeddingModel key (BGESmallEN, BGESmallENV15, BGEBaseEN, BGEBaseENV15, MLE5Large, AllMiniLML6V2, BGESmallZH). Case-insensitive.
+    default: BGESmallENV15
+    required: false
+
+  - name: CONTEXT_FABRIC_EMBED_EP
+    description: ONNX Runtime execution providers. Comma-separated (cpu, cuda, or a fallback chain like cuda,cpu). CUDA requires CUDA 12 libs on LD_LIBRARY_PATH.
+    default: cpu
+    required: false
+
   - name: CF_DISABLE_SQLITE_VEC
-    description: Set to "1" to force the FTS5 prefilter path even if sqlite-vec is installed
+    description: Set to "1" to force the FTS5 prefilter path even if sqlite-vec is loaded.
     required: false
 
 tools:
@@ -170,8 +195,9 @@ documentation:
 
   features:
     - Three-layer memory architecture (L1 in-memory / L2 SQLite per-project / L3 SQLite + vector, cross-project)
-    - "Hybrid search: FTS5 BM25 + vector cosine + Reciprocal Rank Fusion. FTS5 prefilter keeps recall <10ms p50 @ 10K memories."
-    - Optional sqlite-vec ANN acceleration (opt-in, clean FTS5 fallback)
+    - "Hybrid search: FTS5 BM25 + vector cosine + Reciprocal Rank Fusion. Query/passage instruction prefixes applied per embedder family. Sub-100ms p50 on 50K+ corpora."
+    - Bundled sqlite-vec ANN acceleration (vec0 KNN, graceful FTS5 fallback)
+    - Optional NVIDIA CUDA inference via CONTEXT_FABRIC_EMBED_EP=cuda (~30x ingest speedup)
     - Bi-temporal memory — supersedes / supersededBy / validFrom / validUntil + asOf recall filter
     - Provenance — structured citation block (sessionId, eventId, filePath, commitSha, sourceUrl, capturedAt)
     - Dedup-on-store — cosine near-duplicate detection at L3 (skip / merge / allow)
@@ -182,13 +208,18 @@ documentation:
     - Pattern detection and storage
     - Smart routing — auto-selects the optimal layer for each memory
     - Operational hardening — graceful shutdown with drain, WAL checkpoint on close, startup integrity check, explicit transactions on every multi-row write, VACUUM INTO backups
-    - Zero external dependencies — node:sqlite, in-process ONNX embeddings (bge-small-en, 384-d)
+    - Public-benchmark harness — BEIR SciFact / FiQA and LongMemEval_S runners with published baselines
+    - Zero external dependencies — node:sqlite, in-process ONNX embeddings (bge-small-en-v1.5, 384-d)
     - Self-installing — AI calls context.setup to configure any supported CLI
 
 embedding:
-  model: bge-small-en
+  model: bge-small-en-v1.5
   dimension: 384
-  runtime: fastembed-js (ONNX, in-process, no API calls)
+  runtime: fastembed-js (ONNX, in-process, no API calls). Swappable at startup via CONTEXT_FABRIC_EMBED_MODEL.
+  benchmarks:
+    BEIR SciFact (bge-base-en-v1.5, GPU): "nDCG@10 0.7439, Recall@100 0.9667"
+    BEIR FiQA-2018 (bge-base-en-v1.5, GPU): "nDCG@10 0.3801, Recall@100 0.7361"
+    LongMemEval_S (bge-base-en-v1.5, GPU): "Hit@5 0.9520, Recall@10 0.9472"
 
 tags:
   - mcp
@@ -205,9 +236,12 @@ tags:
   - hybrid-search
   - fts5
   - sqlite-vec
+  - cuda
   - bi-temporal
   - provenance
   - procedural-memory
+  - beir
+  - longmemeval
 
 categories:
   - memory

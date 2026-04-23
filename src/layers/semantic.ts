@@ -54,8 +54,13 @@ export class SemanticMemoryLayer {
   private decayThreshold: number;
   /** v0.8: sqlite-vec handle — loaded iff the optional extension is present. */
   private vec: SqliteVecStatus;
-  /** Fixed embedding dimension; bge-small-en produces 384-D vectors. */
-  private static readonly EMBEDDING_DIM = 384;
+  /**
+   * Embedding dimension, taken from the active embedder at construction time.
+   * Default bge-small-en = 384, bge-base-en-v1.5 = 768, etc.
+   * Baked into the sqlite-vec virtual table — switching models requires a
+   * fresh L3 DB.
+   */
+  private readonly embeddingDim: number;
 
   // Prepared statements
   private stmtInsert!: StatementSync;
@@ -95,12 +100,16 @@ export class SemanticMemoryLayer {
 
     this.initSchema();
     this.prepareStatements();
+    // Instantiate the embedder first so we can honor its dimension when
+    // creating the optional sqlite-vec virtual table. getDimension() is
+    // synchronous and does not require model init.
+    this.embedder = new EmbeddingService(undefined, options.embeddingTimeoutMs ?? 30_000);
+    this.embeddingDim = this.embedder.getDimension();
     // v0.8: attempt optional sqlite-vec acceleration. Non-fatal on any failure.
-    this.vec = tryLoadSqliteVec(this.db, SemanticMemoryLayer.EMBEDDING_DIM);
+    this.vec = tryLoadSqliteVec(this.db, this.embeddingDim);
     if (this.vec.loaded) {
       this.backfillVecIndex();
     }
-    this.embedder = new EmbeddingService(undefined, options.embeddingTimeoutMs ?? 30_000);
   }
 
   /** v0.8: whether sqlite-vec was successfully loaded on this instance. */
@@ -133,7 +142,7 @@ export class SemanticMemoryLayer {
     for (const row of rows) {
       try {
         const embedding = JSON.parse(row.embedding) as number[];
-        if (Array.isArray(embedding) && embedding.length === SemanticMemoryLayer.EMBEDDING_DIM) {
+        if (Array.isArray(embedding) && embedding.length === this.embeddingDim) {
           this.vec.upsert(row.rowid, embedding);
         }
       } catch {
@@ -318,7 +327,7 @@ export class SemanticMemoryLayer {
       pinned,
     };
 
-    const embedding = await this.embedder.embed(content);
+    const embedding = await this.embedder.embedPassage(content);
 
     const result = this.stmtInsert.run(
       id,
@@ -348,7 +357,7 @@ export class SemanticMemoryLayer {
 
   /** Retrieve the top-N most semantically similar memories for a query string. */
   async recall(query: string, limit = 10): Promise<ScoredMemory[]> {
-    const queryEmbedding = await this.embedder.embed(query);
+    const queryEmbedding = await this.embedder.embedQuery(query);
     const rows = this.stmtGetAll.all() as unknown as DbRow[];
 
     const scored = rows.map((row) => {
@@ -388,7 +397,7 @@ export class SemanticMemoryLayer {
 
     if (rows.length === 0) return this.recall(query, limit);
 
-    const queryEmbedding = await this.embedder.embed(query);
+    const queryEmbedding = await this.embedder.embedQuery(query);
     const scored = rows.map((row) => {
       const embedding: number[] = JSON.parse(row.embedding);
       return { row, similarity: cosineSimilarity(queryEmbedding, embedding) };
@@ -415,7 +424,7 @@ export class SemanticMemoryLayer {
     }
     if (!query.trim()) return [];
 
-    const queryEmbedding = await this.embedder.embed(query);
+    const queryEmbedding = await this.embedder.embedQuery(query);
     const hits = this.vec.knn(queryEmbedding, limit);
     if (hits.length === 0) return [];
 
@@ -599,7 +608,7 @@ export class SemanticMemoryLayer {
     // Re-embed only if content changed
     let embeddingJson = row.embedding;
     if (contentChanged) {
-      const embedding = await this.embedder.embed(newContent);
+      const embedding = await this.embedder.embedPassage(newContent);
       embeddingJson = JSON.stringify(embedding);
     }
 
@@ -773,7 +782,9 @@ export class SemanticMemoryLayer {
   ): Promise<ScoredMemory | null> {
     if (!content.trim()) return null;
 
-    const queryEmbedding = await this.embedder.embed(content);
+    // Dedup compares a new-incoming passage against stored passages, so we
+    // encode it with the passage prefix (no-op for BGE, `"passage: "` for E5).
+    const queryEmbedding = await this.embedder.embedPassage(content);
 
     // First try the BM25-prefiltered pool — cheap and matches recall semantics.
     let rows: DbRow[] = [];

@@ -16,7 +16,7 @@ import { SemanticMemoryLayer } from '../../src/layers/semantic.js';
 import { tryLoadSqliteVec } from '../../src/sqlite-vec.js';
 import { DatabaseSync } from 'node:sqlite';
 
-const HAS_MODEL = existsSync(resolve('local_cache', 'fast-bge-small-en', 'tokenizer.json'));
+const HAS_MODEL = existsSync(resolve('local_cache', 'fast-bge-small-en-v1.5', 'tokenizer.json'));
 const describeIfModel = HAS_MODEL ? describe : describe.skip;
 
 describe('sqlite-vec optional detection (v0.8)', () => {

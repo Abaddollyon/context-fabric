@@ -7,6 +7,142 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-04-23
+
+### Theme: Retrieval quality and throughput — public benchmarks, BGE v1.5, GPU, prefix fix
+
+This release is the first where Context Fabric has **publicly reproducible
+retrieval numbers on canonical IR and long-term-memory benchmarks**. The
+headline results on a commodity workstation (Ryzen 7 5800H + RTX 3060 12 GB):
+
+| Benchmark | Metric | v0.13 | Published reference |
+|---|---|---:|---|
+| BEIR SciFact | nDCG@10 | **0.7439** | bge-base-en-v1.5 dense-only 0.740 |
+| BEIR SciFact | Recall@100 | **0.9667** | OpenAI text-embedding-3-small ≈ 0.93 |
+| BEIR FiQA-2018 | nDCG@10 | **0.3801** | bge-base-en-v1.5 dense-only 0.406 |
+| BEIR FiQA-2018 | Recall@100 | **0.7361** | OpenAI text-embedding-3-small ≈ 0.69 |
+| LongMemEval_S | Hit@5 | **0.9520** | Zep/Mem0 retrieval layer ≈ 0.85 |
+| LongMemEval_S | Recall@10 | **0.9472** | — |
+
+On Recall@100 (the metric that actually matters for agent memory — the LLM
+reranks whatever retrieval surfaces) we match or beat OpenAI's
+`text-embedding-3-small` on both BEIR subsets, while staying free, offline,
+and 100 % local. Full methodology and reproduction commands in the new
+[`docs/benchmarks.md`](docs/benchmarks.md).
+
+### Added
+- **Public-benchmark harness** — new `benchmarks/public/` tree with BEIR
+  (SciFact / FiQA / NFCorpus) and LongMemEval_S runners driving `ContextEngine`
+  in-process. Reports nDCG@10, Recall@{1,10,100}, MRR@10, Hit@k, per-query
+  latency percentiles, and markdown tables comparing to published baselines.
+  New npm scripts: `bench:beir`, `bench:beir:scifact`, `bench:beir:fiqa`,
+  `bench:longmemeval:s`, `bench:public`.
+- **`scripts/bench-public.sh`** — downloads BEIR / LongMemEval datasets to
+  `.bench-cache/` and dispatches the right runner. Handles the HuggingFace
+  file rename for LongMemEval (`longmemeval_s` → `longmemeval_s.json`) with
+  automatic fallback.
+- **`scripts/setup-gpu.sh` + `scripts/bench-gpu.sh`** — one-command setup
+  for NVIDIA CUDA inference. `setup-gpu.sh` pip-installs the minimal CUDA 12
+  runtime wheels into a project-local `.cuda-libs/` directory (~1 GB, does
+  not touch system CUDA). `bench-gpu.sh` composes `LD_LIBRARY_PATH`,
+  `CONTEXT_FABRIC_EMBED_EP=cuda`, and `BENCH_INGEST_BATCH=128` and can wrap
+  any npm script or arbitrary command.
+- **`CONTEXT_FABRIC_EMBED_MODEL` env var** — runtime-selectable embedder.
+  Accepts any case-insensitive key from fastembed's `EmbeddingModel` enum:
+  `BGESmallEN`, `BGESmallENV15`, `BGEBaseEN`, `BGEBaseENV15`, `MLE5Large`,
+  `AllMiniLML6V2`, `BGESmallZH`. Unknown values log a warning and fall back
+  to the default. See `src/embedding.ts:57-78`.
+- **`CONTEXT_FABRIC_EMBED_EP` env var** — selects the ONNX Runtime execution
+  provider. Comma-separated, case-insensitive. `cpu` (default), `cuda`, or a
+  fallback chain like `cuda,cpu`. See `src/embedding.ts:18-41`.
+- **Model-family-aware query / passage prefixes** — BGE retrieval models
+  are trained with an asymmetric encoder (`"Represent this sentence for
+  searching relevant passages: "` on queries, nothing on passages). E5
+  models use `"query: "` / `"passage: "` on both sides. MiniLM uses no
+  prefixes. New `EmbeddingService.embedQuery` / `embedQueryBatch` /
+  `embedPassage` / `embedPassageBatch` methods apply the right prefix
+  automatically. Recall paths (`SemanticMemoryLayer.recall`,
+  `recallPrefiltered`, `recallVec`) now route queries through
+  `embedQuery`. Store paths (`store`, `CodeIndex.addChunk`) route through
+  `embedPassage`. Cache keys are prefixed to prevent collisions between
+  query and passage embeddings of the same raw string.
+- **`docs/benchmarks.md`** — dedicated benchmarks page with methodology,
+  reproduction commands, per-dataset result tables, and an honest
+  comparison to published systems (BM25, bge-v1 / v1.5 dense-only,
+  Cohere embed-v3, OpenAI `text-embedding-3-*`, Zep, Mem0, MemGPT).
+- **GPU inference section in `docs/configuration.md`** — covers
+  `setup-gpu.sh`, `CONTEXT_FABRIC_EMBED_EP`, and the `cuda,cpu` fallback
+  chain for portable deployments.
+
+### Changed
+- **Default embedder: `bge-small-en` → `bge-small-en-v1.5`** (same 384
+  dimensions, strictly better ranking quality — published SciFact nDCG@10
+  0.691 → 0.713, BEIR-avg 47.5 → 51.7, and ~2× CPU throughput thanks to a
+  better-tuned ONNX graph). No L3 migration required because the dimension
+  is unchanged. See `src/embedding.ts:59`.
+- **`sqlite-vec` is now a regular dependency** (was optional, manual-install
+  in v0.8 – v0.12). Every `npm install` / `docker build` produces an engine
+  that uses ANN-accelerated vec0 KNN by default. Graceful fallback to the
+  FTS5-prefiltered cosine path if the loadable extension fails to attach
+  (sandboxed environments, hardened SQLite builds). On BEIR FiQA (57,638
+  docs) this cut query p50 from 2,895 ms to 91 ms — 32× faster, no quality
+  regression. `CF_DISABLE_SQLITE_VEC=1` still forces the fallback path.
+- **`SemanticMemoryLayer` now honours `embedder.getDimension()`** — the
+  formerly hard-coded `EMBEDDING_DIM=384` is replaced with an instance
+  field derived from the active embedder, so swapping to `BGEBaseENV15`
+  (768-d) etc. just works. The `sqlite-vec` virtual table is created with
+  the right dimension at construction time.
+- **README performance section** — rewritten around the three public-benchmark
+  headline results and the new GPU throughput numbers. Links to
+  `docs/benchmarks.md`.
+- **README feature list** — notes that `sqlite-vec` is now bundled, calls
+  out the query/passage prefix handling, documents the new env vars, and
+  links to the public-benchmark harness.
+- **Dockerfile** — comment updated to reflect that `sqlite-vec` is a
+  regular dep and ships via `npm install --omit=dev`. The image's
+  runtime behaviour is unchanged (already installed the extension
+  correctly when it was manually installed).
+
+### Fixed
+- **`sqlite-vec` rowid coercion** — the `node:sqlite` binding coerces plain
+  JS numbers to SQLite REAL, but vec0 rejects non-integer primary keys with
+  `"Only integers are allowed for primary key values on vec_items"`. Before
+  v0.13 this silently prevented every `vec_items` insert, turning
+  `recallAccelerated()` into a no-op when `sqlite-vec` was installed.
+  `src/sqlite-vec.ts:99-120` now coerces rowids to `BigInt` before binding.
+  This is the fix that actually unlocks the 32× FiQA latency win.
+- **Cache-guard paths in tests** — five test files guarded L3-dependent
+  suites with `existsSync('local_cache/fast-bge-small-en/tokenizer.json')`.
+  That path no longer exists under the new default embedder. Updated to
+  `fast-bge-small-en-v1.5/tokenizer.json` so L3 tests don't silently skip
+  after upgrades: `tests/e2e/full-flow.test.ts`, `tests/integration/engine.test.ts`,
+  `tests/unit/events.test.ts`, `tests/unit/l3-prefilter.test.ts`,
+  `tests/unit/sqlite-vec.test.ts`, `benchmarks/recall-latency.ts`.
+
+### Migration notes
+- **L3 databases are compatible.** The default embedder change
+  (`bge-small-en` → `bge-small-en-v1.5`) keeps the same 384-dim vector space
+  but the embeddings themselves are not interchangeable — stored v1 vectors
+  will still be queryable but new recalls will compare v1.5 query embeddings
+  against v1 passage embeddings, which degrades nDCG@10 by ~4 points. To get
+  the full v1.5 win, either (a) re-embed existing L3 content by deleting the
+  L3 database once and letting `context.importDocs` re-ingest, or (b) pin to
+  v1 by setting `CONTEXT_FABRIC_EMBED_MODEL=BGESmallEN`.
+- **Switching to a different-dimension model (`BGEBaseENV15` → 768-d)
+  requires a fresh L3 database.** The `vec_items` virtual table is created
+  with the embedder's dimension at construction time, so changing
+  embedders without clearing `~/.context-fabric/l3-semantic/` produces an
+  error on first write. This is intentional and loud, not silent.
+
+### Internal
+- Added a process-wide CUDA-vs-CPU smoke test pattern (documented in
+  `scripts/setup-gpu.sh` and `docs/configuration.md`) so anyone can verify
+  GPU inference is actually live without running a full benchmark.
+- The public-benchmark runners use `ContextEngine` directly (not the MCP
+  layer), so numbers reported on this page reflect only retrieval quality
+  — stdio serialisation overhead isn't included. This is the correct
+  isolation for comparing against IR / memory-retrieval literature.
+
 ## [0.12.1] - 2026-04-21
 
 ### Theme: Docs refresh — bring external-facing artifacts in line with reality

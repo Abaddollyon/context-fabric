@@ -430,7 +430,7 @@ describe('EmbeddingService', () => {
   it('should return correct dimension', () => {
     const dim = embedder.getDimension();
     expect(dim).toBeGreaterThan(0);
-    expect(dim).toBe(384); // Default BGESmallEN
+    expect(dim).toBe(384); // Default BGESmallENV15 (same 384 dims as v1)
   });
 
   it('should clear cache', async () => {

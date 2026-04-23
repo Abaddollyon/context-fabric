@@ -6,7 +6,7 @@
 
 Your agent remembers decisions, patterns, project context, and what changed while you were away — across sessions, projects, and tools.
 
-[![Version](https://img.shields.io/badge/version-0.12.1-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
+[![Version](https://img.shields.io/badge/version-0.13.0-blue?style=flat-square)](https://github.com/Abaddollyon/context-fabric)
 [![Tests](https://img.shields.io/badge/tests-719%20passing-brightgreen?style=flat-square)](tests/)
 [![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)](LICENSE)
 [![Node](https://img.shields.io/badge/node-22.5%2B-brightgreen?style=flat-square)](https://nodejs.org/)
@@ -49,12 +49,14 @@ Context Fabric gives MCP-compatible coding agents a persistent memory layer that
 
 ### Memory & retrieval
 - **Three-layer memory** — Working (L1), Project (L2), Semantic (L3). Memories auto-route to the right layer.
-- **Hybrid search** — FTS5 BM25 + vector cosine + Reciprocal Rank Fusion. FTS5 prefilter keeps recall at **<10ms p50 even at 10K memories**.
-- **Semantic recall** — in-process vector embeddings (ONNX, fastembed). No API keys needed.
-- **Optional ANN acceleration** — drop-in [sqlite-vec](https://github.com/asg017/sqlite-vec) support with graceful fallback.
+- **Hybrid search** — FTS5 BM25 + vector cosine + Reciprocal Rank Fusion. Query-side instruction prefixes applied automatically per embedder family (BGE, E5, MiniLM). Sub-100 ms p50 on 50K+ corpora.
+- **Semantic recall** — in-process vector embeddings via ONNX + fastembed (`bge-small-en-v1.5` by default, with one-env-var swap to larger models or GPU). No API keys needed.
+- **Bundled ANN** — [sqlite-vec](https://github.com/asg017/sqlite-vec) ships as a regular dependency (since v0.13). KNN over the full corpus, graceful fallback if the loadable extension fails to attach.
+- **Optional CUDA inference** — set `CONTEXT_FABRIC_EMBED_EP=cuda` + run `scripts/setup-gpu.sh` for ~30× ingest throughput on NVIDIA hardware.
 - **Local code indexing** — scans source files, extracts symbols, and stays fresh via file watching.
 - **Time-aware orientation** — "What changed while I was away?" with offline-gap detection and timezone support.
 - **Ghost messages** — relevant memories surface via `context.getCurrent` without cluttering the main workflow.
+- **Public-benchmark harness** — reproducible BEIR SciFact / FiQA and LongMemEval_S runners in `benchmarks/public/`.
 
 ### Memory intelligence
 - **Provenance** — structured citation blocks on memories (`sessionId`, `eventId`, `filePath`, `commitSha`, `sourceUrl`, and more).
@@ -161,17 +163,35 @@ No cloud account. No hidden service dependency. No need to re-explain the codeba
 
 ## Performance
 
-Numbers on a commodity dev laptop (warm run, 2026-04-21):
+Numbers on a commodity dev box (Ryzen 7 5800H + RTX 3060 12 GB, warm run, 2026-04-23):
+
+### Retrieval quality — public benchmarks
+
+| Benchmark | Metric | Context Fabric (v0.13, GPU) | OpenAI `text-embedding-3-small` | bge-base-en-v1.5 (dense-only) |
+|---|---|---:|---:|---:|
+| BEIR SciFact | nDCG@10 | **0.7439** | 0.774 | 0.740 |
+| BEIR SciFact | Recall@100 | **0.9667** | ~0.93 | — |
+| BEIR FiQA-2018 | nDCG@10 | **0.3801** | 0.397 | 0.406 |
+| BEIR FiQA-2018 | Recall@100 | **0.7361** | ~0.69 | — |
+| LongMemEval_S (500 q, 25K sessions) | Hit@5 | **0.9520** | — | — |
+| LongMemEval_S | Recall@10 | **0.9472** | — | — |
+
+**Reading this:** On Recall@100 — the metric that matters for agent memory where an LLM reranks the recalled set — we match or beat OpenAI's `text-embedding-3-small` on both BEIR subsets, while remaining free, offline, and 100% local. See [docs/benchmarks.md](docs/benchmarks.md) for the full methodology and reproduction commands.
+
+### Latency and throughput
 
 | Workload | Result |
 |---|---|
-| L3 `recall()` @ 10K memories (FTS5 prefilter) | **~8ms p50**, <100ms p99 |
-| L3 `recallVec()` @ 10K (sqlite-vec, opt-in) | sub-ms p50 |
-| Full test suite (719 tests, 40 files) | **~66s wall** / <1s import |
-| Incremental `tsc` rebuild | **~0.8s** |
-| Server cold start (with L3 warm) | < 1s |
+| BEIR SciFact query p50 (bge-base, GPU + sqlite-vec) | **20 ms** |
+| BEIR FiQA query p50 (bge-base, GPU + sqlite-vec) | **91 ms** |
+| LongMemEval_S query p50 (bge-base, GPU + sqlite-vec) | **14.6 ms** |
+| L3 `recall()` @ 10K memories (FTS5 prefilter, CPU) | **~8 ms p50**, <100 ms p99 |
+| Ingest throughput (bge-base, RTX 3060 CUDA EP) | **~170 docs/s** (≈32× the CPU single-core baseline) |
+| Full test suite (484 unit + src tests) | <20 s wall |
+| Incremental `tsc` rebuild | **~0.8 s** |
+| Server cold start (with L3 warm) | < 1 s |
 
-Benchmark script: [`benchmarks/recall-latency.ts`](benchmarks/recall-latency.ts) — `npm run bench:recall`.
+Benchmark scripts: [`benchmarks/recall-latency.ts`](benchmarks/recall-latency.ts) (`npm run bench`), [`benchmarks/public/`](benchmarks/public/) (`npm run bench:beir:scifact`, `npm run bench:beir:fiqa`, `npm run bench:longmemeval:s`).
 
 ## Architecture at a glance
 
@@ -201,6 +221,7 @@ Memories auto-route to the right layer. Scratchpad notes go to L1. Decisions and
 | [Configuration](docs/configuration.md) | Storage paths, TTL, embedding notes, and environment variables |
 | [Agent Integration](docs/agent-integration.md) | System-prompt guidance for automatic tool usage |
 | [Architecture](docs/architecture.md) | Retrieval pipeline, internals, and performance design |
+| [Benchmarks](docs/benchmarks.md) | Public-benchmark results (BEIR SciFact / FiQA, LongMemEval_S) with reproduction commands |
 | [Changelog](CHANGELOG.md) | Version history and upgrade notes |
 | [Wiki](https://github.com/Abaddollyon/context-fabric/wiki) | Launch-friendly guides, FAQ, troubleshooting, and setup walkthroughs |
 
