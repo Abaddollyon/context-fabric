@@ -62,14 +62,9 @@ ttl:
 # Embedding Configuration
 # -----------------------------------------------------------------------------
 # Settings for the embedding model used in L3 semantic search.
+# The model is selected via the CONTEXT_FABRIC_EMBED_MODEL env var (see below),
+# not via this YAML block. Default: bge-small-en-v1.5 (384 dims, 33M params).
 embedding:
-  # Model identifier (HuggingFace format)
-  # Default: Xenova/all-MiniLM-L6-v2 (384 dimensions, fast, high quality)
-  model: "Xenova/all-MiniLM-L6-v2"
-  
-  # Embedding dimension (must match the model)
-  dimension: 384
-  
   # Batch size for embedding generation
   batchSize: 32
 
@@ -158,10 +153,50 @@ These environment variables override config file settings:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `CONTEXT_FABRIC_DIR` | Base directory for all Context Fabric data | `~/.context-fabric` |
+| `CONTEXT_FABRIC_EMBED_MODEL` | Embedding model name (see table below) | `BGESmallENV15` |
+| `CONTEXT_FABRIC_EMBED_EP` | ONNX execution provider: `cpu`, `cuda`, `cuda,cpu` | `cpu` |
 | `FASTEMBED_CACHE_PATH` | Path to cached embedding models | Auto-detected |
 | `LOG_LEVEL` | Logging verbosity: `debug`, `info`, `warn`, `error` | `info` |
 | `L1_DEFAULT_TTL` | Override L1 default TTL (seconds) | `3600` |
 | `L3_DECAY_DAYS` | Override L3 decay period (days) | `14` |
+
+### Embedding model selection
+
+`CONTEXT_FABRIC_EMBED_MODEL` accepts any case-insensitive fastembed-js model name. Unknown values warn and fall back to the default.
+
+| Value | Dims | Params | Notes |
+|-------|-----:|-------:|-------|
+| `BGESmallENV15` (default) | 384 | 33M | Best small English model; BGE query prefix applied automatically |
+| `BGEBaseENV15` | 768 | 110M | Higher quality; recommended on GPU |
+| `BGESmallEN` | 384 | 33M | v1 predecessor, strictly worse than v1.5 |
+| `BGEBaseEN` | 768 | 110M | v1 predecessor |
+| `AllMiniLML6V2` | 384 | 22M | Legacy default; no query prefix applied |
+| `MLE5Large` | 1024 | 560M | Multilingual E5; applies E5 query/passage prefixes |
+
+Changing the embedder after L3 memories already exist requires wiping the L3 database — embeddings are model-specific and cannot be mixed.
+
+### GPU / CUDA execution provider
+
+Context Fabric can route embedding inference through the NVIDIA CUDA execution provider for a ~30× throughput increase over CPU (measured: 5.9 docs/s → 180 docs/s on an RTX 3060). It is opt-in.
+
+One-time setup on a CUDA-capable host:
+
+```bash
+scripts/setup-gpu.sh         # installs CUDA 12 wheels into project-local .cuda-libs/
+scripts/setup-gpu.sh --check # verify
+```
+
+Then run any command with GPU enabled:
+
+```bash
+scripts/bench-gpu.sh npm run bench:beir:scifact
+# or manually
+CONTEXT_FABRIC_EMBED_EP=cuda \
+  LD_LIBRARY_PATH="$(find .cuda-libs -type d -name lib | paste -sd ':' -)" \
+  node dist/server.js
+```
+
+The CPU default is untouched. Hosts without an NVIDIA GPU silently fall back to CPU even if `cuda` is requested.
 
 ### Example Usage
 
@@ -232,7 +267,7 @@ services:
 
 /app/models/              # Embedded ONNX models (baked into image)
 └── fastembed/
-    └── xenova-all-minilm-l6-v2/
+    └── fast-bge-small-en-v1.5/
 ```
 
 ### Volume Management
@@ -281,16 +316,9 @@ docker run --rm \
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `embedding.model` | string | `Xenova/all-MiniLM-L6-v2` | HuggingFace model identifier |
-| `embedding.dimension` | number | `384` | Embedding vector dimension |
 | `embedding.batchSize` | number | `32` | Batch size for embedding generation |
 
-**Available Models:**
-
-| Model | Dimension | Speed | Quality |
-|-------|-----------|-------|---------|
-| `Xenova/all-MiniLM-L6-v2` | 384 | Fast | Good |
-| `Xenova/all-MiniLM-L12-v2` | 384 | Medium | Better |
+The model itself is selected via `CONTEXT_FABRIC_EMBED_MODEL` (see **Environment Variables** above). The embedding dimension is inferred from the chosen model at runtime (384 for `BGESmallENV15`, 768 for `BGEBaseENV15`, 1024 for `MLE5Large`, etc.) — there is no longer a separate `dimension` key.
 
 ### Context Section
 
@@ -314,4 +342,6 @@ docker run --rm \
 
 4. **Embedding Model Cache**: Pre-download models to `FASTEMBED_CACHE_PATH` for offline/air-gapped usage.
 
-5. **Backup Before Changes**: The L2 database is auto-backed up, but manually back up before major config changes.
+5. **sqlite-vec is default-on**: As of v0.13.0, `sqlite-vec` is a regular dependency and L3 recall uses vec0 KNN when available. No configuration is required. Query p50 drops from ~260 ms to ~20 ms on a 57K-doc corpus when vec0 is active.
+
+6. **Backup Before Changes**: The L2 database is auto-backed up, but manually back up before major config changes.

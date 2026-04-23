@@ -353,28 +353,28 @@ To "save" an important memory from decay, pin it (`pinned: true`) or access it p
 
 ### Can I use a different embedding model?
 
-**Yes**, but it requires rebuilding the Docker image (or recompiling for local installs).
+**Yes** — the model is selected at runtime via the `CONTEXT_FABRIC_EMBED_MODEL` environment variable. No recompile or rebuild required.
 
-Edit `~/.context-fabric/config.yaml`:
+```bash
+# Default (no env var needed) — bge-small-en-v1.5
+export CONTEXT_FABRIC_EMBED_MODEL=BGESmallENV15
 
-```yaml
-embedding:
-  model: "Xenova/all-MiniLM-L6-v2"  # Change this
-  dimension: 384                       # Must match the model!
-  batchSize: 32
+# Higher quality, larger model (recommended on GPU)
+export CONTEXT_FABRIC_EMBED_MODEL=BGEBaseENV15
 ```
 
-Compatible models must:
-- Be ONNX format (via [fastembed](https://github.com/ankane/fastembed))
-- Have consistent dimensions
-- Be available on HuggingFace
+**Available models** (all ship inside fastembed-js, no extra download):
 
-**Popular alternatives:**
-- `Xenova/all-MiniLM-L6-v2` (default, 384d) – Fast, good quality
-- `Xenova/all-MiniLM-L12-v2` (384d) – Slightly better quality, slower
-- `Xenova/all-distilroberta-v1` (768d) – Higher quality, larger
+| Model | Dims | Params | Notes |
+|---|---:|---:|---|
+| `BGESmallENV15` (default) | 384 | 33M | Best small English model; BGE query prefix applied automatically |
+| `BGEBaseENV15` | 768 | 110M | Higher quality; recommended on GPU |
+| `BGESmallEN` | 384 | 33M | v1 predecessor, strictly worse than v1.5 |
+| `BGEBaseEN` | 768 | 110M | v1 predecessor |
+| `AllMiniLML6V2` | 384 | 22M | Legacy default; no query prefix applied |
+| `MLE5Large` | 1024 | 560M | Multilingual E5; applies E5 query/passage prefixes |
 
-**Warning:** Changing models after you have L3 memories will require regenerating all embeddings. Back up first!
+**Warning:** Changing models after you have L3 memories will require regenerating all embeddings — embeddings are model-specific and cannot be mixed. Back up first, or wipe the L3 database before switching.
 
 ### How do I contribute?
 
