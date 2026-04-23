@@ -12,6 +12,7 @@
 **Product & Usage**
 - [Memory Types](Memory-Types.md)
 - [Configuration](Configuration.md)
+- [Benchmarks](Benchmarks.md)
 - [Agent Integration](Agent-Integration.md)
 - [FAQ](FAQ.md)
 

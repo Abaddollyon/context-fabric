@@ -14,6 +14,7 @@ Context Fabric gives MCP-compatible coding tools persistent memory across sessio
 - **New to the project?** Read [Getting Started](Getting-Started.md)
 - **Need to wire it into a CLI?** Go to [CLI Setup](CLI-Setup.md)
 - **Want the feature surface quickly?** See [Tools Reference](Tools-Reference.md)
+- **Want the numbers?** Open [Benchmarks](Benchmarks.md)
 - **Want the internals?** Open [Architecture](Architecture.md)
 - **Need the full canonical docs?** Use the repo docs linked throughout this wiki
 
@@ -22,6 +23,7 @@ Context Fabric gives MCP-compatible coding tools persistent memory across sessio
 ## Why people use Context Fabric
 
 - **Local-first** — SQLite storage, local embeddings, Docker or local deployment, no hosted service required.
+- **Benchmarked against the frontier** — on BEIR SciFact and LongMemEval_S, retrieval is within a few points of OpenAI's paid embedding API and above it on deep recall (see [Benchmarks](Benchmarks.md)).
 - **Built for coding agents** — remembers architecture decisions, debugging discoveries, house rules, and code patterns.
 - **MCP-native** — real MCP server with Tools, Resources, and Prompts.
 - **Code-aware** — code indexing, symbol extraction, and semantic code search.
@@ -99,7 +101,8 @@ Manual and auto-setup details: [CLI Setup](CLI-Setup.md)
 ### If you want to understand the product
 1. [Tools Reference](Tools-Reference.md)
 2. [Memory Types](Memory-Types.md)
-3. [FAQ](FAQ.md)
+3. [Benchmarks](Benchmarks.md)
+4. [FAQ](FAQ.md)
 
 ### If you want to understand the internals
 1. [Architecture](Architecture.md)

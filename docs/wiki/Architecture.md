@@ -516,77 +516,91 @@ private static looksLikePattern(content): boolean {
 
 ### Model Selection
 
-Context Fabric uses **fastembed-js** with the **BGESmallEN** model by default:
+Context Fabric uses **fastembed-js** with the **BGESmallENV15** model by default:
 
 | Property | Value |
 |----------|-------|
-| **Model** | `Xenova/all-MiniLM-L6-v2` (via fastembed) |
+| **Model** | `bge-small-en-v1.5` (via fastembed) |
 | **Dimensions** | 384 |
-| **Format** | ONNX Runtime |
+| **Parameters** | 33M |
+| **Format** | ONNX Runtime (CPU + optional CUDA execution provider) |
 | **Model Size** | ~80 MB |
 | **Language** | English-optimized |
 | **Cache** | LRU (10,000 entries) |
 
+The model is selectable at runtime via `CONTEXT_FABRIC_EMBED_MODEL`. Available values: `BGESmallENV15` (default), `BGEBaseENV15`, `BGESmallEN`, `BGEBaseEN`, `AllMiniLML6V2`, `MLE5Large`. The embedding dimension is inferred from the chosen model.
+
+### Query vs. Passage Encoding (BGE query prefix)
+
+BGE v1.5 retrieval models are trained with an asymmetric encoder: passages are embedded as-is, but queries are embedded with the prefix `"Represent this sentence for searching relevant passages: "`. `EmbeddingService` applies this automatically based on the model family:
+
+| Model family | Query prefix | Passage prefix |
+|---|---|---|
+| `bge-*` | `Represent this sentence for searching relevant passages: ` | *(none)* |
+| `mle5-*` / other E5 | `query: ` | `passage: ` |
+| `AllMiniLM*` and others | *(none)* | *(none)* |
+
+The recall path (`semantic.ts`) routes through `embedQuery` / `embedQueryBatch`; store and ingest paths route through `embedPassage`. On BEIR FiQA this single fix closes roughly half the gap to the published `bge-base-en-v1.5` dense-only numbers.
+
 ### EmbeddingService Implementation
 
 ```typescript
-// src/embedding.ts
+// src/embedding.ts (simplified)
 export class EmbeddingService {
   private model: FlagEmbedding | null = null;
   private cache: Map<string, number[]> = new Map();
-  private modelName: EmbeddingModel = EmbeddingModel.BGESmallEN;
+  private modelName: EmbeddingModel;  // resolved from CONTEXT_FABRIC_EMBED_MODEL
   private MAX_CACHE_SIZE = 10_000;
 
-  async embed(text: string): Promise<number[]> {
-    await this.init();
-    
-    // Check cache
-    const cached = this.cache.get(text);
-    if (cached) return cached;
+  async embedQuery(text: string): Promise<number[]> {
+    const prefixed = this.prefixes.query + text;
+    return this.embed(prefixed);
+  }
 
-    // Generate embedding
-    const embedding = await this.model.embed([text]);
-    const result = this.normalizeEmbedding(embedding);
-
-    // Cache with LRU eviction
-    this.evictIfNeeded();
-    this.cache.set(text, result);
-    
-    return result;
+  async embedPassage(text: string): Promise<number[]> {
+    const prefixed = this.prefixes.passage + text;
+    return this.embed(prefixed);
   }
 
   getDimension(): number {
-    return 384;  // BGESmallEN
+    return this.dim;  // 384 (small), 768 (base), 1024 (MLE5Large)
   }
 }
 ```
 
 ### Similarity Calculation
 
-Cosine similarity computed in pure JavaScript:
+With `sqlite-vec` loaded (default since v0.13.0), cosine similarity is computed by the `vec0` virtual table in native code:
 
-```typescript
-// src/layers/semantic.ts
-function cosineSimilarity(a: number[], b: number[]): number {
-  let dot = 0, normA = 0, normB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;  // Range: [-1, 1]
-}
+```sql
+SELECT rowid, distance FROM vec_items
+WHERE embedding MATCH ? AND k = ?
+ORDER BY distance;
 ```
+
+A pure-JS fallback path exists (`cosineSimilarity` in `semantic.ts`) for environments where `sqlite-vec` is unavailable.
+
+### Execution Provider (CPU / CUDA)
+
+`CONTEXT_FABRIC_EMBED_EP` selects the ONNX execution provider:
+
+| Value | Behavior |
+|-------|----------|
+| `cpu` (default) | Single-core ONNX inference. Portable. |
+| `cuda` | NVIDIA GPU inference via `libonnxruntime_providers_cuda.so` shipped inside `onnxruntime-node`. Requires CUDA 12 runtime libs on `LD_LIBRARY_PATH` (see `scripts/setup-gpu.sh`). |
+| `cuda,cpu` | Try CUDA, fall back to CPU if GPU allocation fails. |
 
 ### Performance Characteristics
 
-| Metric | Value |
-|--------|-------|
-| Embedding generation | ~50-100ms per text |
-| Cache hit | <1ms |
-| Similarity computation | ~1ms per 1000 memories |
-| Memory per embedding | 384 × 8 bytes = ~3 KB |
+Measured on AMD Ryzen 7 5800H + RTX 3060 12 GB, `bge-base-en-v1.5`:
+
+| Metric | CPU | GPU (CUDA) |
+|--------|-----|-----|
+| Ingest throughput (batched) | ~12 docs/s | ~180 docs/s |
+| Embedding generation (single) | 50–100 ms | 5–15 ms |
+| Cache hit | <1 ms | <1 ms |
+| L3 recall p50 (57K corpus) | ~90 ms | ~20 ms (`sqlite-vec` KNN) |
+| Memory per embedding | 384 × 4 bytes = ~1.5 KB (vec0) + JSON fallback column | same |
 
 ---
 
