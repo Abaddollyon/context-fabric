@@ -17,14 +17,15 @@ explainable retrieval scoring, per-question benchmark artifacts, a scoped
 bi-temporal fabric graph, and code-aware current-context construction.
 
 Headline validation on the same commodity workstation profile (Ryzen 7 5800H +
-RTX 3060 12 GB, BGE base v1.5 on CUDA where noted):
+RTX 3060 12 GB, BGE base v1.5 on CUDA where noted), rerun from the final
+0.14.0 end state:
 
-| Benchmark | Metric | v0.13 published | v0.14 rerun |
+| Benchmark | Metric | v0.13 published | v0.14 final rerun |
 |---|---|---:|---:|
-| BEIR SciFact | nDCG@10 | 0.7439 | **0.7456** |
-| BEIR SciFact | Recall@10 | 0.8709 | **0.8726** |
-| BEIR FiQA-2018 | nDCG@10 | 0.3801 | **0.3809** |
-| BEIR FiQA-2018 | Recall@10 | 0.4623 | **0.4654** |
+| BEIR SciFact | nDCG@10 | 0.7439 | 0.7439 |
+| BEIR SciFact | Recall@10 | 0.8709 | 0.8709 |
+| BEIR FiQA-2018 | nDCG@10 | 0.3801 | 0.3801 |
+| BEIR FiQA-2018 | Recall@10 | 0.4623 | 0.4623 |
 | LongMemEval_S | Hit@5 | 0.9520 | 0.9200 |
 | LongMemEval_S | Recall@10 | 0.9472 | 0.9210 |
 
@@ -65,8 +66,8 @@ single number.
   exports, methods, interfaces, type aliases, enums, constants, and test
   declarations more accurately while preserving stable definition-first ranking.
 - **Public benchmark docs** — benchmark documentation now separates published
-  v0.13 baseline numbers from the v0.14 rerun and documents artifact output for
-  reproducible regression analysis.
+  v0.13 baseline numbers from final v0.14 reruns, adds CPU/GPU comparison notes,
+  and documents artifact output for reproducible regression analysis.
 - **MCP tool surface** — the server now exposes 29 tools, adding graph and
   code-index repair operations while keeping existing memory, skill, setup,
   observability, backup, and import/export flows.
