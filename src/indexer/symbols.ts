@@ -74,6 +74,11 @@ const TS_PATTERNS: Array<{ regex: RegExp; kind: ExtractedSymbol['kind'] }> = [
 // Method pattern matched separately against the original (indented) line
 const TS_METHOD_REGEX = /^\s+(?:(?:public|private|protected|static|async|abstract|readonly|override|get|set)\s+)*(\w+)\s*\(/;
 const TS_METHOD_FALSE_POSITIVES = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'throw', 'new', 'import', 'from', 'require', 'super', 'this', 'constructor']);
+const TS_NAMED_IMPORT_REGEX = /^import\s+(?:type\s+)?(?:[\w$]+\s*,\s*)?\{([^}]+)\}\s+from\s+['"][^'"]+['"]/;
+const TS_DEFAULT_IMPORT_REGEX = /^import\s+(?:type\s+)?([\w$]+)\s+from\s+['"][^'"]+['"]/;
+const TS_NAMESPACE_IMPORT_REGEX = /^import\s+\*\s+as\s+([\w$]+)\s+from\s+['"][^'"]+['"]/;
+const TS_NAMED_EXPORT_REGEX = /^export\s+(?:type\s+)?\{([^}]+)\}/;
+const TS_TEST_DECLARATION_REGEX = /\b(?:describe|it|test)\s*(?:\.\w+)?\s*\(\s*['"`]([^'"`]+)['"`]/;
 
 function extractTSJS(lines: string[]): ExtractedSymbol[] {
   const symbols: ExtractedSymbol[] = [];
@@ -86,17 +91,44 @@ function extractTSJS(lines: string[]): ExtractedSymbol[] {
     if (trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*') || trimmed === '') continue;
 
     let matched = false;
+    const namedImportMatch = trimmed.match(TS_NAMED_IMPORT_REGEX);
+    if (namedImportMatch && namedImportMatch[1]) {
+      for (const importedName of parseNamedBindings(namedImportMatch[1])) {
+        symbols.push(makeTSSymbol(importedName, 'export', i, trimmed, lines, false));
+      }
+      matched = true;
+    }
+
+    const defaultImportMatch = trimmed.match(TS_DEFAULT_IMPORT_REGEX);
+    if (defaultImportMatch && defaultImportMatch[1] && !trimmed.includes('{')) {
+      symbols.push(makeTSSymbol(defaultImportMatch[1], 'export', i, trimmed, lines, false));
+      matched = true;
+    }
+
+    const namespaceImportMatch = trimmed.match(TS_NAMESPACE_IMPORT_REGEX);
+    if (namespaceImportMatch && namespaceImportMatch[1]) {
+      symbols.push(makeTSSymbol(namespaceImportMatch[1], 'export', i, trimmed, lines, false));
+      matched = true;
+    }
+
+    const namedExportMatch = trimmed.match(TS_NAMED_EXPORT_REGEX);
+    if (namedExportMatch && namedExportMatch[1]) {
+      for (const exportedName of parseNamedBindings(namedExportMatch[1])) {
+        symbols.push(makeTSSymbol(exportedName, 'export', i, trimmed, lines, false));
+      }
+      matched = true;
+    }
+
+    const testMatch = trimmed.match(TS_TEST_DECLARATION_REGEX);
+    if (testMatch && testMatch[1]) {
+      symbols.push(makeTSSymbol(testMatch[1], 'function', i, trimmed, lines, true));
+      matched = true;
+    }
+
     for (const { regex, kind } of TS_PATTERNS) {
       const match = trimmed.match(regex);
       if (match && match[1]) {
-        symbols.push({
-          name: match[1],
-          kind,
-          lineStart: i + 1,
-          lineEnd: findBraceEnd(lines, i),
-          signature: trimmed.length <= 200 ? trimmed : trimmed.substring(0, 200),
-          docComment: extractDocComment(lines, i),
-        });
+        symbols.push(makeTSSymbol(match[1], kind, i, trimmed, lines, true));
         matched = true;
         break;
       }
@@ -106,19 +138,43 @@ function extractTSJS(lines: string[]): ExtractedSymbol[] {
     if (!matched) {
       const methodMatch = line.match(TS_METHOD_REGEX);
       if (methodMatch && methodMatch[1] && !TS_METHOD_FALSE_POSITIVES.has(methodMatch[1])) {
-        symbols.push({
-          name: methodMatch[1],
-          kind: 'method',
-          lineStart: i + 1,
-          lineEnd: findBraceEnd(lines, i),
-          signature: trimmed.length <= 200 ? trimmed : trimmed.substring(0, 200),
-          docComment: extractDocComment(lines, i),
-        });
+        symbols.push(makeTSSymbol(methodMatch[1], 'method', i, trimmed, lines, true));
       }
     }
   }
 
   return symbols;
+}
+
+function makeTSSymbol(
+  name: string,
+  kind: ExtractedSymbol['kind'],
+  lineIdx: number,
+  trimmed: string,
+  lines: string[],
+  useBraceEnd: boolean,
+): ExtractedSymbol {
+  return {
+    name,
+    kind,
+    lineStart: lineIdx + 1,
+    lineEnd: useBraceEnd ? findBraceEnd(lines, lineIdx) : lineIdx + 1,
+    signature: trimmed.length <= 200 ? trimmed : trimmed.substring(0, 200),
+    docComment: extractDocComment(lines, lineIdx),
+  };
+}
+
+function parseNamedBindings(bindings: string): string[] {
+  return bindings
+    .split(',')
+    .map((binding) => binding.trim())
+    .filter(Boolean)
+    .map((binding) => {
+      const withoutType = binding.replace(/^type\s+/, '').trim();
+      const aliasMatch = withoutType.match(/^(?:[\w$]+)\s+as\s+([\w$]+)$/);
+      return aliasMatch?.[1] ?? withoutType.match(/^([\w$]+)/)?.[1] ?? '';
+    })
+    .filter(Boolean);
 }
 
 // ============================================================================

@@ -19,6 +19,8 @@ export interface EventResult {
  */
 export class EventHandler {
   private engine: ContextEngine;
+  private recentCommandBySession = new Map<string, string>();
+  private recentCommandEntityId: string | null = null;
 
   constructor(engine: ContextEngine) {
     this.engine = engine;
@@ -125,14 +127,32 @@ export class EventHandler {
       }
     );
 
+    // Project deterministic file/session graph links immediately; code-index symbol links
+    // are synchronized separately by syncCodeIndexGraph().
+    if (typeof path === 'string' && path.length > 0) {
+      try {
+        const file = this.engine.graph.upsertEntity({ kind: 'file', key: `file:${path}`, name: path, metadata: { language: this.detectLanguage(path) } });
+        const memoryEntity = this.engine.graph.findEntities({ kind: 'memory', key: `memory:${memory.id}` })[0];
+        if (memoryEntity) this.engine.graph.upsertRelationship({ type: 'mentions', fromEntityId: memoryEntity.id, toEntityId: file.id, sourceMemoryId: memory.id });
+        if (event?.sessionId) {
+          const session = this.engine.graph.upsertEntity({ kind: 'session', key: `session:${event.sessionId}`, name: event.sessionId, metadata: { sessionId: event.sessionId } });
+          this.engine.graph.upsertRelationship({ type: 'opened_file', fromEntityId: session.id, toEntityId: file.id, sourceMemoryId: memory.id });
+        }
+      } catch (err) {
+        console.warn('[ContextFabric] graph file_opened projection failed:', err);
+      }
+    }
+
     // Fire-and-forget code index update for this file
-    try {
-      const idx = this.engine.getCodeIndex();
-      idx.reindexFile(path).catch((err: unknown) => {
-        console.warn('[ContextFabric] reindexFile fire-and-forget failed:', err);
-      });
-    } catch (err) {
-      console.warn('[ContextFabric] getCodeIndex() failed during file_opened event:', err);
+    if (typeof path === 'string' && path.length > 0) {
+      try {
+        const idx = this.engine.getCodeIndex();
+        idx.reindexFile(path).catch((err: unknown) => {
+          console.warn('[ContextFabric] reindexFile fire-and-forget failed:', err);
+        });
+      } catch (err) {
+        console.warn('[ContextFabric] getCodeIndex() failed during file_opened event:', err);
+      }
     }
 
     return {
@@ -173,9 +193,22 @@ export class EventHandler {
 
     triggeredActions.push('stored_command');
 
+    let commandEntity;
+    try {
+      commandEntity = this.engine.graph.upsertEntity({ kind: 'task', key: `command:${command}`, name: command, metadata: { kind: 'command', output: output?.substring(0, 500) } });
+      this.recentCommandEntityId = commandEntity.id;
+      if (event?.sessionId) {
+        this.recentCommandBySession.set(event.sessionId, commandEntity.id);
+        const session = this.engine.graph.upsertEntity({ kind: 'session', key: `session:${event.sessionId}`, name: event.sessionId, metadata: { sessionId: event.sessionId } });
+        this.engine.graph.upsertRelationship({ type: 'ran_command', fromEntityId: session.id, toEntityId: commandEntity.id, sourceMemoryId: memory.id });
+      }
+    } catch (err) {
+      console.warn('[ContextFabric] graph command projection failed:', err);
+    }
+
     // If command failed (non-zero exit usually), store as error
     if (output && this.looksLikeError(output)) {
-      await this.engine.store(
+      const errorMemory = await this.engine.store(
         `Error from command "${command}":\n${output}`,
         'bug_fix',
         {
@@ -189,6 +222,14 @@ export class EventHandler {
           tags: ['error', 'command_failed', 'auto_capture'],
         }
       );
+      try {
+        const errorEntity = this.engine.graph.findEntities({ kind: 'error', sourceMemoryId: errorMemory.id })[0];
+        if (errorEntity && commandEntity) {
+          this.engine.graph.upsertRelationship({ type: 'caused_by', fromEntityId: errorEntity.id, toEntityId: commandEntity.id, sourceMemoryId: errorMemory.id });
+        }
+      } catch (err) {
+        console.warn('[ContextFabric] graph command-error projection failed:', err);
+      }
       triggeredActions.push('stored_error');
     }
 
@@ -227,6 +268,16 @@ export class EventHandler {
         tags: ['error', 'bug_fix', 'auto_capture'],
       }
     );
+
+    try {
+      const errorEntity = this.engine.graph.findEntities({ kind: 'error', sourceMemoryId: memory.id })[0];
+      const commandEntityId = (event?.sessionId ? this.recentCommandBySession.get(event.sessionId) : undefined) ?? this.recentCommandEntityId;
+      if (errorEntity && commandEntityId) {
+        this.engine.graph.upsertRelationship({ type: 'caused_by', fromEntityId: errorEntity.id, toEntityId: commandEntityId, sourceMemoryId: memory.id });
+      }
+    } catch (err) {
+      console.warn('[ContextFabric] graph error-command projection failed:', err);
+    }
 
     return {
       processed: true,
@@ -297,6 +348,16 @@ export class EventHandler {
         ttl: 86400, // 24 hours
       }
     );
+
+    try {
+      const project = this.engine.graph.upsertEntity({ kind: 'project', key: `project:${projectPath}`, name: projectPath, metadata: { projectPath } });
+      const session = this.engine.graph.upsertEntity({ kind: 'session', key: `session:${event?.sessionId ?? 'unknown'}`, name: event?.sessionId ?? 'unknown', metadata: { sessionId: event?.sessionId } });
+      const agent = this.engine.graph.upsertEntity({ kind: 'agent', key: `agent:${cliType}`, name: cliType, metadata: { cliType } });
+      this.engine.graph.upsertRelationship({ type: 'scoped_to', fromEntityId: session.id, toEntityId: project.id, sourceMemoryId: memory.id });
+      this.engine.graph.upsertRelationship({ type: 'uses_agent', fromEntityId: session.id, toEntityId: agent.id, sourceMemoryId: memory.id });
+    } catch (err) {
+      console.warn('[ContextFabric] graph session projection failed:', err);
+    }
 
     return {
       processed: true,

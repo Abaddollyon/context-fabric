@@ -20,11 +20,9 @@
  *   BENCH_CACHE=<dir>          # root for extracted datasets (default .bench-cache)
  *   BENCH_INGEST_BATCH=<n>     # embed batch size (default 64)
  *   BENCH_LIMIT=<n>            # max docs to ingest (default: full corpus)
- *   BENCH_QUERY_LIMIT=<n>      # max queries to evaluate (default: all)
  *   BENCH_RECALL_LIMIT=<n>     # recall top-k depth (default 100)
  */
 
-import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';

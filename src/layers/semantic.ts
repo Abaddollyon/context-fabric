@@ -340,7 +340,7 @@ export class SemanticMemoryLayer {
       now,
       now,
       pinned ? 1 : 0,
-      now, // v0.11: valid_from defaults to created_at
+      ((metadata.temporal as { validFrom?: number } | undefined)?.validFrom as number | undefined) ?? now,
     );
 
     // v0.8: mirror into vec0 when sqlite-vec is available. Rowid comes from
