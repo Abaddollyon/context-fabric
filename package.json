@@ -1,6 +1,6 @@
 {
   "name": "context-fabric",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Local-first MCP memory server for AI coding agents with semantic search, code indexing, and time-aware orientation.",
   "type": "module",
   "main": "dist/index.js",

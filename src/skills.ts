@@ -12,6 +12,7 @@
  */
 import type { Memory, SkillMeta, SkillParameter } from './types.js';
 import type { ProjectMemoryLayer } from './layers/project.js';
+import type { FabricGraphService } from './fabric-graph.js';
 
 export interface CreateSkillInput {
   slug: string;
@@ -65,7 +66,10 @@ function validateSlug(slug: string): void {
 }
 
 export class SkillService {
-  constructor(private readonly l2: ProjectMemoryLayer) {}
+  constructor(
+    private readonly l2: ProjectMemoryLayer,
+    private readonly graph?: FabricGraphService,
+  ) {}
 
   /** Create a new skill. Throws if slug already exists. */
   async create(input: CreateSkillInput): Promise<Memory> {
@@ -105,6 +109,7 @@ export class SkillService {
       tags,
       true, // pinned — skills are procedural knowledge, exempt from decay
     );
+    this.projectSkillToGraph(memory);
     return memory;
   }
 
@@ -152,7 +157,7 @@ export class SkillService {
    * invocationCount and stamps lastInvokedAt so `list()` can surface
    * frequently-used skills first.
    */
-  async invoke(slug: string): Promise<InvokeResult> {
+  async invoke(slug: string, context: { sessionId?: string; agent?: string } = {}): Promise<InvokeResult> {
     const mem = await this.getBySlug(slug);
     if (!mem) throw new Error(`Skill not found: ${slug}`);
     const sk = mem.metadata!.skill!;
@@ -164,6 +169,7 @@ export class SkillService {
     await this.l2.update(mem.id, {
       metadata: { ...mem.metadata!, skill: updatedSkill },
     });
+    this.projectSkillInvocationToGraph(mem, updatedSkill, context);
     return {
       slug: updatedSkill.slug,
       name: updatedSkill.name,
@@ -205,6 +211,7 @@ export class SkillService {
         title: nextSkill.name,
       },
     });
+    this.projectSkillToGraph(updated);
     return updated;
   }
 
@@ -213,5 +220,44 @@ export class SkillService {
     const mem = await this.getBySlug(slug);
     if (!mem) return false;
     return this.l2.delete(mem.id);
+  }
+
+  private projectSkillToGraph(mem: Memory): void {
+    if (!this.graph || !mem.metadata?.skill) return;
+    const skill = mem.metadata.skill;
+    const skillEntity = this.graph.upsertEntity({
+      kind: 'skill',
+      key: `skill:${skill.slug}`,
+      name: skill.name,
+      sourceMemoryId: mem.id,
+      metadata: { description: skill.description, version: skill.version ?? 1 },
+    });
+    const memoryEntity = this.graph.upsertEntity({
+      kind: 'memory',
+      key: `memory:${mem.id}`,
+      name: skill.name,
+      sourceMemoryId: mem.id,
+      metadata: { type: 'skill' },
+    });
+    this.graph.upsertRelationship({ type: 'recorded_as', fromEntityId: skillEntity.id, toEntityId: memoryEntity.id, sourceMemoryId: mem.id });
+  }
+
+  private projectSkillInvocationToGraph(mem: Memory, skill: SkillMeta, context: { sessionId?: string; agent?: string }): void {
+    if (!this.graph) return;
+    const skillEntity = this.graph.upsertEntity({
+      kind: 'skill',
+      key: `skill:${skill.slug}`,
+      name: skill.name,
+      sourceMemoryId: mem.id,
+      metadata: { description: skill.description, version: skill.version ?? 1, invocationCount: skill.invocationCount ?? 0 },
+    });
+    if (context.sessionId) {
+      const session = this.graph.upsertEntity({ kind: 'session', key: `session:${context.sessionId}`, name: context.sessionId, metadata: { sessionId: context.sessionId } });
+      this.graph.upsertRelationship({ type: 'invoked_in', fromEntityId: skillEntity.id, toEntityId: session.id, sourceMemoryId: mem.id });
+    }
+    if (context.agent) {
+      const agent = this.graph.upsertEntity({ kind: 'agent', key: `agent:${context.agent}`, name: context.agent, metadata: { cliType: context.agent } });
+      this.graph.upsertRelationship({ type: 'invoked_by', fromEntityId: skillEntity.id, toEntityId: agent.id, sourceMemoryId: mem.id });
+    }
   }
 }

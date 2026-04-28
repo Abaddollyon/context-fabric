@@ -16,7 +16,21 @@ import {
   Suggestion,
   FabricConfig,
   RecallMode,
+  ActiveCodeContext,
+  ActiveCodeChunk,
+  ActiveCodeSymbol,
+  CurrentContextQuerySnapshot,
+  ContextSection,
 } from './types.js';
+import {
+  buildRetrievalCandidate,
+  extractQueryFeatures,
+  scoreRetrievalCandidates,
+  SCORING_PROFILES,
+  type ScoringProfileName,
+  type RetrievalExplanation,
+  type RetrievalCandidate,
+} from './retrieval-quality.js';
 import { WorkingMemoryLayer } from './layers/working.js';
 import { ProjectMemoryLayer } from './layers/project.js';
 import { SemanticMemoryLayer, ScoredMemory } from './layers/semantic.js';
@@ -29,6 +43,10 @@ import { metrics } from './metrics.js';
 import type { OrientationContext, OfflineGap } from './types.js';
 import { CodeIndex, type IndexStatus } from './indexer/code-index.js';
 import { SkillService } from './skills.js';
+import { FabricGraphService } from './fabric-graph.js';
+import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { relative, resolve } from 'node:path';
 
 // ============================================================================
 // Type Definitions
@@ -64,10 +82,43 @@ export interface RecallOptions {
   includeSuperseded?: boolean;
   /** v0.11: bi-temporal. Query state as-of this epoch ms. Default now (hides superseded). */
   asOf?: number;
+  /** v0.13: deterministic scoring profile. Default preserves existing behavior unless enabled. */
+  scoringProfile?: ScoringProfileName;
+  /** v0.13: attach ranking component explanations for debugging/audits. Default false. */
+  explain?: boolean;
+  /** v0.13: collapse derived representations to source evidence. Default false for back-compat. */
+  dedupeRepresentations?: boolean;
+}
+
+export interface CurrentContextOptions {
+  sessionId?: string;
+  currentFile?: string;
+  currentCommand?: string;
+  language?: string;
+  filePath?: string;
+  cursorLine?: number;
+  currentLine?: number;
+  errorOutput?: string;
+  cliCapabilities?: CLICapability;
+}
+
+interface CurrentContextQuery {
+  sessionId?: string;
+  activeFile?: string;
+  activeLine?: number;
+  activeSymbol?: string;
+  currentCommand?: string;
+  errorSignature?: string;
+  language?: string;
+  projectPath: string;
+  branch?: string;
+  recentFiles: string[];
+  terms: string[];
 }
 
 export interface RankedMemory extends ScoredMemory {
   layer: MemoryLayer;
+  explanation?: RetrievalExplanation;
 }
 
 export interface GhostResult {
@@ -116,6 +167,7 @@ export class ContextEngine {
   l2: ProjectMemoryLayer;
   l3: SemanticMemoryLayer;
   skills: SkillService;
+  graph: FabricGraphService;
   config: FabricConfig;
   projectPath: string;
   patternExtractor: PatternExtractor;
@@ -160,7 +212,12 @@ export class ContextEngine {
     // Initialize helpers
     this.patternExtractor = new PatternExtractor(this.l2, this.l3, this.log.bind(this));
     this.eventHandler = new EventHandler(this);
-    this.skills = new SkillService(this.l2);
+    this.graph = new FabricGraphService({
+      projectPath: this.projectPath,
+      baseDir: options.isEphemeral ? undefined : storagePaths.l2Path,
+      isEphemeral: options.isEphemeral,
+    });
+    this.skills = new SkillService(this.l2, this.graph);
 
     // Start auto-cleanup if enabled
     if (options.autoCleanup !== false) {
@@ -202,6 +259,43 @@ export class ContextEngine {
       });
     }
     return this.codeIndex;
+  }
+
+  async syncCodeIndexGraph(): Promise<void> {
+    this.ensureOpen('syncCodeIndexGraph');
+    const index = this.getCodeIndex();
+    await index.ensureReady();
+    const project = this.graph.upsertEntity({
+      kind: 'project',
+      key: `project:${this.projectPath}`,
+      name: this.projectPath,
+      metadata: { projectPath: this.projectPath },
+    });
+    const results = index.searchSymbols('', { limit: 10000 });
+    const files = new Set<string>();
+    for (const result of results) {
+      files.add(result.filePath);
+      const file = this.graph.upsertEntity({
+        kind: 'file',
+        key: `file:${result.filePath}`,
+        name: result.filePath,
+        metadata: { language: result.language },
+      });
+      this.graph.upsertRelationship({ type: 'contains_file', fromEntityId: project.id, toEntityId: file.id });
+      if (result.symbol) {
+        const symbol = this.graph.upsertEntity({
+          kind: 'symbol',
+          key: `symbol:${result.filePath}#${result.symbol.name}:${result.symbol.lineStart}`,
+          name: result.symbol.name,
+          metadata: { ...result.symbol, filePath: result.filePath, language: result.language },
+        });
+        this.graph.upsertRelationship({ type: 'contains_symbol', fromEntityId: file.id, toEntityId: symbol.id });
+      }
+    }
+    for (const filePath of files) {
+      const file = this.graph.findEntities({ kind: 'file', key: `file:${filePath}` })[0];
+      if (file) this.graph.upsertRelationship({ type: 'indexed_in', fromEntityId: file.id, toEntityId: project.id });
+    }
   }
 
   /**
@@ -314,6 +408,7 @@ export class ContextEngine {
 
     memory.layer = targetLayer;
     this.log('debug', `Stored ${type} in L${targetLayer}: ${memory.id}`);
+    this.projectMemoryToGraph(memory, targetLayer);
 
     // v0.11: bi-temporal supersession — wire the link after a successful
     // L3 insert. Silently no-ops for unknown predecessor ids so callers
@@ -331,6 +426,8 @@ export class ContextEngine {
           if (refreshed) {
             refreshed.layer = MemoryLayer.L3_SEMANTIC;
             memory = refreshed;
+            this.projectMemoryToGraph(memory, targetLayer);
+            this.projectSupersessionToGraph(supersedesId, memory.id);
           }
         } else {
           this.log('warn', `supersedes target not found: ${supersedesId}`);
@@ -347,7 +444,10 @@ export class ContextEngine {
    * Build context window for CLI injection
    * Returns: L1 all + top 5 relevant from L2 + top 5 from L3
    */
-  async getContextWindow(cliCapabilities?: CLICapability): Promise<ContextWindow> {
+  async getContextWindow(optionsOrCapabilities: CurrentContextOptions | CLICapability = {}): Promise<ContextWindow> {
+    const options = this.normalizeContextOptions(optionsOrCapabilities);
+    const query = this.buildCurrentContextQuery(options);
+    const cliCapabilities = options.cliCapabilities;
     const maxWorking = cliCapabilities?.preferences?.maxContextMemories
       ?? this.config.context.maxWorkingMemories;
     const maxRelevant = this.config.context.maxRelevantMemories;
@@ -355,48 +455,82 @@ export class ContextEngine {
     const maxSuggestions = this.config.context.maxSuggestions;
 
     // L1: Get all working memories (session context)
-    const working = this.l1.getAll().slice(0, maxWorking);
+    const workingAll = this.l1.getAll();
+    const working = this.rankWorkingMemories(workingAll, query).slice(0, maxWorking);
 
-    // L2: Get recent project memories
-    const recentL2 = await this.l2.getRecent(5);
+    // L2: Get recent project memories plus targeted code/command/error recall.
+    const recentL2 = await this.l2.getRecent(8);
+    const targetedL2 = await this.collectTargetedL2Memories(query);
 
-    // L3: Get relevant semantic memories based on working context
+    // L3: Get relevant semantic memories based on current code/command/query context.
     const l3Relevant: ScoredMemory[] = [];
-    if (working.length > 0) {
-      // Use recent working memories as query context
-      const query = working
-        .slice(0, 3)
-        .map((m) => m.content)
-        .join(' ');
-
+    const recallQuery = this.buildRecallQuery(query, working);
+    if (recallQuery) {
       try {
-        const semanticResults = await this.l3.recall(query, 5);
+        const semanticResults = await this.l3.recall(recallQuery, 8);
         l3Relevant.push(...semanticResults);
       } catch (err) {
         this.log('warn', 'L3 recall unavailable in getContextWindow:', err);
       }
     }
 
-    // Combine L2 and L3 for relevant memories (weight scales relevanceScore)
-    const relevant: Memory[] = [
-      ...recentL2.map((m) => ({ ...m, relevanceScore: 0.8 * ((m.metadata?.weight ?? 3) / 3) })),
-      ...l3Relevant.map((m) => ({ ...m, relevanceScore: m.similarity * ((m.metadata?.weight ?? 3) / 3) })),
-    ]
-      .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0))
-      .slice(0, maxRelevant);
+    const activeCode = await this.buildActiveCodeContext(query);
+
+    // Combine L2 and L3 for relevant memories (weight scales relevanceScore),
+    // with current-code/command boosts and stable de-duplication by id.
+    const relevant = this.rankRelevantMemories([
+      ...recentL2,
+      ...targetedL2,
+      ...l3Relevant.map((m) => ({ ...m, relevanceScore: m.similarity })),
+    ], query).slice(0, maxRelevant);
+
+    activeCode.relatedMemoryIds = relevant
+      .filter((m) => this.memoryMatchesActiveCode(m, query))
+      .map((m) => m.id)
+      .slice(0, 8);
+
+    const relatedDecisions = this.rankRelevantMemories(
+      await this.collectMemoriesByTypes(['decision'], query),
+      query,
+    ).slice(0, 4);
+    const recentErrors = this.rankRelevantMemories(
+      await this.collectMemoriesByTypes(['bug_fix', 'error'], query),
+      query,
+    ).slice(0, 4);
 
     // Get patterns
     const patterns = await this.patternExtractor.extractPatterns(this.projectPath);
     const rankedPatterns = this.patternExtractor.rankPatterns(patterns, {
-      language: working.find((m) => m.metadata?.fileContext?.language)?.metadata?.fileContext
-        ?.language,
+      language: query.language,
+      filePath: query.activeFile ?? options.filePath,
     });
 
     // Generate suggestions based on context
     const suggestions = await this.generateSuggestions(working, relevant, rankedPatterns);
+    if (activeCode.activeSymbol) {
+      suggestions.unshift({
+        id: `suggest_active_symbol_${activeCode.activeSymbol.name}`,
+        type: 'action',
+        content: `Use active ${activeCode.activeSymbol.kind} ${activeCode.activeSymbol.name} as the primary coding context.`,
+        confidence: 0.82,
+        sourceMemoryIds: activeCode.relatedMemoryIds,
+      });
+    }
 
     // Get ghost messages
-    const ghostMessages = await this.generateGhostMessages(working, relevant);
+    const ghostMessages = this.generateCodeAwareGhostMessages(query, activeCode, relatedDecisions, recentErrors)
+      .concat(await this.generateGhostMessages(working, relevant))
+      .slice(0, this.config.context.maxGhostMessages);
+
+    const sections = this.buildContextSections({
+      working,
+      activeCode,
+      relatedDecisions,
+      recentErrors,
+      relevant,
+      suggestions: suggestions.slice(0, maxSuggestions),
+      ghostMessages,
+    });
 
     return {
       working,
@@ -404,7 +538,345 @@ export class ContextEngine {
       patterns: rankedPatterns.slice(0, maxPatterns),
       suggestions: suggestions.slice(0, maxSuggestions),
       ghostMessages,
+      activeCode,
+      relatedDecisions,
+      recentErrors,
+      sections,
+      query: this.snapshotCurrentContextQuery(query),
     };
+  }
+
+  private normalizeContextOptions(optionsOrCapabilities: CurrentContextOptions | CLICapability): CurrentContextOptions {
+    if ('cliType' in optionsOrCapabilities) {
+      return { cliCapabilities: optionsOrCapabilities };
+    }
+    return optionsOrCapabilities;
+  }
+
+  private buildCurrentContextQuery(options: CurrentContextOptions): CurrentContextQuery {
+    const working = this.l1.getAll();
+    const recentFiles = working
+      .map((m) => m.metadata?.fileContext?.path)
+      .filter((p): p is string => typeof p === 'string' && p.length > 0)
+      .slice(0, 8);
+    const activeFile = this.normalizeProjectFile(options.currentFile ?? options.filePath ?? recentFiles[0]);
+    const currentCommand = options.currentCommand;
+    const errorSignature = this.extractErrorSignature(`${currentCommand ?? ''}\n${options.errorOutput ?? ''}`);
+    const terms = this.tokenizeContextTerms([
+      activeFile,
+      currentCommand,
+      errorSignature,
+      options.language,
+      ...recentFiles,
+    ]);
+    return {
+      sessionId: options.sessionId,
+      activeFile,
+      activeLine: options.cursorLine ?? options.currentLine,
+      currentCommand,
+      errorSignature,
+      language: options.language,
+      projectPath: this.projectPath,
+      branch: this.currentGitBranch(),
+      recentFiles,
+      terms,
+    };
+  }
+
+  private snapshotCurrentContextQuery(query: CurrentContextQuery): CurrentContextQuerySnapshot {
+    return {
+      sessionId: query.sessionId,
+      activeFile: query.activeFile,
+      activeSymbol: query.activeSymbol,
+      currentCommand: query.currentCommand,
+      errorSignature: query.errorSignature,
+      language: query.language,
+      projectPath: query.projectPath,
+      branch: query.branch,
+      recentFiles: query.recentFiles,
+    };
+  }
+
+  private normalizeProjectFile(filePath?: string): string | undefined {
+    if (!filePath) return undefined;
+    const projectRoot = resolve(this.projectPath);
+    const absolute = resolve(projectRoot, filePath);
+    const rel = relative(projectRoot, absolute).replace(/\\/g, '/');
+    if (!rel || rel.startsWith('..')) return undefined;
+    return rel;
+  }
+
+  private currentGitBranch(): string | undefined {
+    try {
+      return execFileSync('git', ['branch', '--show-current'], {
+        cwd: this.projectPath,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private buildRecallQuery(query: CurrentContextQuery, working: Memory[]): string {
+    return [
+      query.activeFile,
+      query.activeSymbol,
+      query.currentCommand,
+      query.errorSignature,
+      ...query.terms,
+      ...working.slice(0, 3).map((m) => m.content),
+    ].filter(Boolean).join(' ').slice(0, 2000);
+  }
+
+  private tokenizeContextTerms(values: Array<string | undefined>): string[] {
+    const terms = new Set<string>();
+    for (const value of values) {
+      if (!value) continue;
+      for (const part of value.split(/[^A-Za-z0-9_./:-]+/)) {
+        const trimmed = part.trim();
+        if (trimmed.length >= 3) terms.add(trimmed.toLowerCase());
+      }
+    }
+    return [...terms].slice(0, 32);
+  }
+
+  private extractErrorSignature(text: string): string | undefined {
+    if (!text.trim()) return undefined;
+    const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
+    const errorLine = lines.find((line) => /(?:error|exception|failed|assert|expected|received|traceback)/i.test(line));
+    if (!errorLine) return undefined;
+    return errorLine.replace(/\x1b\[[0-9;]*m/g, '').slice(0, 240);
+  }
+
+  private rankWorkingMemories(memories: Memory[], query: CurrentContextQuery): Memory[] {
+    return this.rankRelevantMemories(memories, query);
+  }
+
+  private async collectTargetedL2Memories(query: CurrentContextQuery): Promise<Memory[]> {
+    const searches = [query.activeFile, query.currentCommand, query.errorSignature, query.activeSymbol]
+      .filter((value): value is string => typeof value === 'string' && value.length > 0);
+    const collected: Memory[] = [];
+    for (const term of searches.slice(0, 4)) {
+      collected.push(...await this.l2.search(term));
+    }
+    return collected;
+  }
+
+  private async collectMemoriesByTypes(types: MemoryType[], query: CurrentContextQuery): Promise<Memory[]> {
+    const collected: Memory[] = [];
+    for (const type of types) {
+      collected.push(...this.l2.findByTypePaginated(type, 20, 0));
+    }
+    const recallTerm = query.activeFile ?? query.currentCommand ?? query.errorSignature;
+    if (recallTerm) {
+      try {
+        collected.push(...(await this.l3.recall(recallTerm, 8)).filter((m) => types.includes(m.type)));
+      } catch {
+        // L3 is optional for current-context construction.
+      }
+    }
+    return collected;
+  }
+
+  private rankRelevantMemories(memories: Memory[], query: CurrentContextQuery): Memory[] {
+    const seen = new Set<string>();
+    return memories
+      .filter((memory) => {
+        if (seen.has(memory.id)) return false;
+        seen.add(memory.id);
+        return true;
+      })
+      .map((memory) => ({ ...memory, relevanceScore: this.scoreMemoryForCurrentContext(memory, query) }))
+      .sort((a, b) => (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0));
+  }
+
+  private scoreMemoryForCurrentContext(memory: Memory, query: CurrentContextQuery): number {
+    let score = Number(memory.relevanceScore ?? ('similarity' in memory ? (memory as ScoredMemory).similarity : 0.25));
+    const content = `${memory.content} ${memory.metadata?.title ?? ''}`.toLowerCase();
+    const filePath = memory.metadata?.fileContext?.path ?? memory.metadata?.provenance?.filePath;
+    if (query.sessionId && (memory.metadata?.sessionId === query.sessionId || memory.metadata?.provenance?.sessionId === query.sessionId)) score += 0.25;
+    if (query.activeFile && filePath === query.activeFile) score += 0.55;
+    if (query.activeFile && content.includes(query.activeFile.toLowerCase())) score += 0.35;
+    if (query.currentCommand && content.includes(query.currentCommand.toLowerCase())) score += 0.3;
+    if (query.errorSignature && content.includes(query.errorSignature.toLowerCase().slice(0, 80))) score += 0.35;
+    for (const term of query.terms.slice(0, 12)) {
+      if (content.includes(term)) score += 0.04;
+    }
+    if (memory.type === 'decision' && query.activeFile) score += 0.12;
+    if ((memory.type === 'bug_fix' || memory.type === 'error') && (query.errorSignature || this.isCommandLikelyTestOrBuild(query.currentCommand))) score += 0.2;
+    score *= ((memory.metadata?.weight ?? 3) / 3);
+    return score;
+  }
+
+  private memoryMatchesActiveCode(memory: Memory, query: CurrentContextQuery): boolean {
+    if (!query.activeFile) return false;
+    const filePath = memory.metadata?.fileContext?.path ?? memory.metadata?.provenance?.filePath;
+    return filePath === query.activeFile || memory.content.includes(query.activeFile);
+  }
+
+  private async buildActiveCodeContext(query: CurrentContextQuery): Promise<ActiveCodeContext> {
+    const activeCode: ActiveCodeContext = {
+      filePath: query.activeFile,
+      language: query.language,
+      symbols: [],
+      chunks: [],
+      relatedMemoryIds: [],
+    };
+
+    if (!this.config.codeIndex.enabled) return activeCode;
+
+    try {
+      const idx = this.getCodeIndex();
+      await idx.ensureReady();
+      activeCode.indexStatus = idx.getStatus();
+      if (query.activeFile) {
+        const symbols = idx.getFileSymbols(query.activeFile).slice(0, 20).map((symbol): ActiveCodeSymbol => ({
+          name: symbol.name,
+          kind: symbol.kind,
+          signature: symbol.signature,
+          lineStart: symbol.lineStart,
+          lineEnd: symbol.lineEnd,
+          docComment: symbol.docComment,
+        }));
+        activeCode.symbols = symbols;
+        const activeSymbol = idx.getActiveSymbol(query.activeFile, query.activeLine);
+        if (activeSymbol) {
+          activeCode.activeSymbol = {
+            name: activeSymbol.name,
+            kind: activeSymbol.kind,
+            signature: activeSymbol.signature,
+            lineStart: activeSymbol.lineStart,
+            lineEnd: activeSymbol.lineEnd,
+            docComment: activeSymbol.docComment,
+          };
+          query.activeSymbol = activeSymbol.name;
+        }
+
+        const filePattern = query.activeFile;
+        const textQuery = [query.activeSymbol, query.errorSignature, query.currentCommand, query.activeFile].filter(Boolean).join(' ');
+        const chunks: ActiveCodeChunk[] = [];
+        chunks.push(...idx.searchText(textQuery || query.activeFile, { filePattern, limit: 4, includeContent: true }).map((result) => ({
+          filePath: result.filePath,
+          lineStart: result.chunk?.lineStart ?? 1,
+          lineEnd: result.chunk?.lineEnd ?? 1,
+          content: result.chunk?.content,
+          source: 'text' as const,
+        })));
+        if (query.activeSymbol) {
+          chunks.push(...idx.searchText(query.activeSymbol, { filePattern, limit: 3, includeContent: true }).map((result) => ({
+            filePath: result.filePath,
+            lineStart: result.chunk?.lineStart ?? 1,
+            lineEnd: result.chunk?.lineEnd ?? 1,
+            content: result.chunk?.content,
+            source: 'nearby' as const,
+          })));
+        }
+        try {
+          chunks.push(...(await idx.searchSemantic(textQuery || query.activeFile, { filePattern, limit: 3, includeContent: true, threshold: 0.25 })).map((result) => ({
+            filePath: result.filePath,
+            lineStart: result.chunk?.lineStart ?? 1,
+            lineEnd: result.chunk?.lineEnd ?? 1,
+            content: result.chunk?.content,
+            similarity: result.chunk?.similarity,
+            source: 'semantic' as const,
+          })));
+        } catch {
+          // Semantic code context is optional when embeddings are unavailable.
+        }
+        activeCode.chunks = this.dedupeCodeChunks(chunks).slice(0, 8);
+      }
+    } catch (err) {
+      this.log('warn', 'Code-aware current context unavailable:', err);
+    }
+
+    return activeCode;
+  }
+
+  private dedupeCodeChunks(chunks: ActiveCodeChunk[]): ActiveCodeChunk[] {
+    const seen = new Set<string>();
+    return chunks.filter((chunk) => {
+      const key = `${chunk.filePath}:${chunk.lineStart}:${chunk.lineEnd}:${chunk.source}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  private isCommandLikelyTestOrBuild(command?: string): boolean {
+    return !!command && /\b(test|vitest|jest|pytest|build|tsc|npm|pnpm|yarn|cargo|go test)\b/i.test(command);
+  }
+
+  private generateCodeAwareGhostMessages(
+    query: CurrentContextQuery,
+    activeCode: ActiveCodeContext,
+    relatedDecisions: Memory[],
+    recentErrors: Memory[],
+  ): GhostMessage[] {
+    const messages: GhostMessage[] = [];
+    const now = new Date();
+    if (query.activeFile) {
+      const symbolText = activeCode.activeSymbol ? ` near ${activeCode.activeSymbol.kind} ${activeCode.activeSymbol.name}` : '';
+      messages.push({
+        id: `ghost_active_code_${query.activeFile}`,
+        role: 'system',
+        content: `Current coding context is ${query.activeFile}${symbolText}; prioritize active-code symbols, related decisions, and recent errors for this file.`,
+        timestamp: now,
+        isVisible: false,
+        trigger: 'active_code_context',
+      });
+    }
+    if (query.currentCommand && this.isCommandLikelyTestOrBuild(query.currentCommand)) {
+      messages.push({
+        id: `ghost_command_${Date.now()}`,
+        role: 'system',
+        content: `Current command looks test/build-related: ${query.currentCommand}. Surface failing-test, build-error, and prior bug-fix context first.`,
+        timestamp: now,
+        isVisible: false,
+        trigger: 'command_context',
+      });
+    }
+    if (relatedDecisions.length > 0) {
+      messages.push({
+        id: `ghost_decisions_${relatedDecisions[0].id}`,
+        role: 'system',
+        content: `Relevant decision may constrain this work: ${relatedDecisions[0].content.substring(0, 180)}`,
+        timestamp: now,
+        isVisible: false,
+        trigger: 'related_decision',
+      });
+    }
+    if (recentErrors.length > 0) {
+      messages.push({
+        id: `ghost_recent_error_${recentErrors[0].id}`,
+        role: 'system',
+        content: `Recent related bug fix or error may recur here: ${recentErrors[0].content.substring(0, 180)}`,
+        timestamp: now,
+        isVisible: false,
+        trigger: 'bug_fix_context',
+      });
+    }
+    return messages;
+  }
+
+  private buildContextSections(input: {
+    working: Memory[];
+    activeCode: ActiveCodeContext;
+    relatedDecisions: Memory[];
+    recentErrors: Memory[];
+    relevant: Memory[];
+    suggestions: SuggestedAction[];
+    ghostMessages: GhostMessage[];
+  }): ContextSection[] {
+    return [
+      { id: 'working', title: 'Working Memory', priority: 90, items: input.working.slice(0, 8) },
+      { id: 'active-code', title: 'Active Code', priority: 100, items: [input.activeCode] },
+      { id: 'related-decisions', title: 'Related Decisions', priority: 85, items: input.relatedDecisions.slice(0, 4) },
+      { id: 'recent-errors', title: 'Recent Errors', priority: 80, items: input.recentErrors.slice(0, 4) },
+      { id: 'relevant-memories', title: 'Relevant Memories', priority: 70, items: input.relevant.slice(0, 8) },
+      { id: 'suggestions', title: 'Suggested Actions', priority: 60, items: input.suggestions.slice(0, 5) },
+      { id: 'ghost-messages', title: 'Ghost Messages', priority: 50, items: input.ghostMessages.slice(0, 5) },
+    ].filter((section) => section.items.length > 0);
   }
 
   /**
@@ -441,7 +913,7 @@ export class ContextEngine {
     if (mode === 'keyword') {
       try {
         const raw = await this.recallKeyword(query, fetchLimit, layers, options.filter);
-        return applyTemporal(raw).slice(0, limit);
+        return applyTemporal(await this.applyRetrievalQuality(query, raw, options)).slice(0, limit);
       } finally {
         metrics.observe(`recall.latency_ms.${mode}`, Date.now() - recallStart);
       }
@@ -449,7 +921,7 @@ export class ContextEngine {
 
     if (mode === 'hybrid') {
       try {
-        const raw = await this.recallHybrid(query, fetchLimit, layers, options.filter);
+        const raw = await this.recallHybrid(query, fetchLimit, layers, options);
         return applyTemporal(raw).slice(0, limit);
       } finally {
         metrics.observe(`recall.latency_ms.${mode}`, Date.now() - recallStart);
@@ -495,7 +967,7 @@ export class ContextEngine {
     const weightedSimilarity = (m: RankedMemory) =>
       m.similarity * ((m.metadata?.weight ?? 3) / 3);
     return applyTemporal(
-      results.sort((a, b) => weightedSimilarity(b) - weightedSimilarity(a)),
+      await this.applyRetrievalQuality(query, results.sort((a, b) => weightedSimilarity(b) - weightedSimilarity(a)), options),
     ).slice(0, limit);
   }
 
@@ -551,10 +1023,16 @@ export class ContextEngine {
       const l2BM25 = this.l2.searchBM25(query, limit);
       for (const { memory, bm25Score } of l2BM25) {
         if (this.matchesFilter(memory, filter)) {
+          const similarity = ContextEngine.normalizeBM25(bm25Score);
+          const rank = results.length + 1;
           results.push({
             ...memory,
             layer: MemoryLayer.L2_PROJECT,
-            similarity: ContextEngine.normalizeBM25(bm25Score),
+            similarity,
+            explanation: {
+              componentScores: { baseScore: similarity, bm25Score, bm25Rank: rank, keywordRank: rank },
+              boosts: [],
+            },
           });
         }
       }
@@ -565,10 +1043,16 @@ export class ContextEngine {
       const l3BM25 = this.l3.searchBM25(query, limit);
       for (const { memory, bm25Score } of l3BM25) {
         if (this.matchesFilter(memory, filter)) {
+          const similarity = ContextEngine.normalizeBM25(bm25Score);
+          const rank = results.length + 1;
           results.push({
             ...memory,
             layer: MemoryLayer.L3_SEMANTIC,
-            similarity: ContextEngine.normalizeBM25(bm25Score),
+            similarity,
+            explanation: {
+              componentScores: { baseScore: similarity, bm25Score, bm25Rank: rank, keywordRank: rank },
+              boosts: [],
+            },
           });
         }
       }
@@ -603,12 +1087,12 @@ export class ContextEngine {
     query: string,
     limit: number,
     layers: MemoryLayer[],
-    filter?: RecallOptions['filter'],
+    options: RecallOptions,
   ): Promise<RankedMemory[]> {
     const fetchLimit = limit * 2; // fetch more candidates for better fusion
 
     // Ranker 1: Keyword (BM25)
-    const keywordResults = this.recallKeyword(query, fetchLimit, layers, filter);
+    const keywordResults = this.recallKeyword(query, fetchLimit, layers, options.filter);
 
     // Ranker 2: Semantic (vector cosine) — only L3 contributes semantic scores.
     // v0.8: Use recallAccelerated() so we automatically use the sqlite-vec
@@ -619,8 +1103,16 @@ export class ContextEngine {
       try {
         const l3Results = await this.l3.recallAccelerated(query, fetchLimit);
         for (const r of l3Results) {
-          if (this.matchesFilter(r, filter)) {
-            semanticResults.push({ ...r, layer: MemoryLayer.L3_SEMANTIC });
+          if (this.matchesFilter(r, options.filter)) {
+            const rank = semanticResults.length + 1;
+            semanticResults.push({
+              ...r,
+              layer: MemoryLayer.L3_SEMANTIC,
+              explanation: {
+                componentScores: { baseScore: r.similarity, vectorScore: r.similarity, vectorRank: rank },
+                boosts: [],
+              },
+            });
           }
         }
       } catch (err) {
@@ -629,13 +1121,18 @@ export class ContextEngine {
     }
 
     // Fuse with RRF
-    const fused = ContextEngine.fuseRRF(keywordResults, semanticResults, limit);
+    const fused = await ContextEngine.fuseRRF(keywordResults, semanticResults, limit, SCORING_PROFILES[options.scoringProfile ?? 'default'].rrfK, {
+      query,
+      scoringProfile: options.scoringProfile,
+      explain: options.explain,
+      dedupeRepresentations: options.dedupeRepresentations,
+    });
 
     // Append L1 results after fusion (no FTS/embeddings, fixed similarity)
     if (layers.includes(MemoryLayer.L1_WORKING)) {
       const l1Results = this.l1.getAll();
       for (const r of l1Results) {
-        if (r.content.toLowerCase().includes(query.toLowerCase()) && this.matchesFilter(r, filter)) {
+        if (r.content.toLowerCase().includes(query.toLowerCase()) && this.matchesFilter(r, options.filter)) {
           // Only add if not already present from keyword ranker
           if (!fused.some(f => f.id === r.id)) {
             fused.push({ ...r, layer: MemoryLayer.L1_WORKING, similarity: 0.5 });
@@ -647,7 +1144,7 @@ export class ContextEngine {
     // Apply weight multiplier to final scores and re-sort
     const weightedSimilarity = (m: RankedMemory) =>
       m.similarity * ((m.metadata?.weight ?? 3) / 3);
-    return fused
+    return (await this.applyRetrievalQuality(query, fused, options))
       .sort((a, b) => weightedSimilarity(b) - weightedSimilarity(a))
       .slice(0, limit);
   }
@@ -658,13 +1155,26 @@ export class ContextEngine {
    *
    * Deduplicates by memory ID, keeping the version with higher original similarity.
    */
-  static fuseRRF(
+  static async fuseRRF(
     listA: RankedMemory[],
     listB: RankedMemory[],
     limit: number,
     k = 60,
-  ): RankedMemory[] {
-    const scoreMap = new Map<string, { score: number; memory: RankedMemory }>();
+    options: {
+      query?: string;
+      scoringProfile?: ScoringProfileName;
+      explain?: boolean;
+      dedupeRepresentations?: boolean;
+    } = {},
+  ): Promise<RankedMemory[]> {
+    const scoreMap = new Map<string, {
+      score: number;
+      memory: RankedMemory;
+      keywordRank?: number;
+      vectorRank?: number;
+      keywordScore?: number;
+      vectorScore?: number;
+    }>();
 
     // Score list A
     for (let i = 0; i < listA.length; i++) {
@@ -673,12 +1183,14 @@ export class ContextEngine {
       const existing = scoreMap.get(mem.id);
       if (existing) {
         existing.score += rrfScore;
+        existing.keywordRank = i + 1;
+        existing.keywordScore = mem.similarity;
         // Keep version with higher original similarity
         if (mem.similarity > existing.memory.similarity) {
           existing.memory = mem;
         }
       } else {
-        scoreMap.set(mem.id, { score: rrfScore, memory: mem });
+        scoreMap.set(mem.id, { score: rrfScore, memory: mem, keywordRank: i + 1, keywordScore: mem.similarity });
       }
     }
 
@@ -689,11 +1201,13 @@ export class ContextEngine {
       const existing = scoreMap.get(mem.id);
       if (existing) {
         existing.score += rrfScore;
+        existing.vectorRank = i + 1;
+        existing.vectorScore = mem.similarity;
         if (mem.similarity > existing.memory.similarity) {
           existing.memory = mem;
         }
       } else {
-        scoreMap.set(mem.id, { score: rrfScore, memory: mem });
+        scoreMap.set(mem.id, { score: rrfScore, memory: mem, vectorRank: i + 1, vectorScore: mem.similarity });
       }
     }
 
@@ -704,9 +1218,76 @@ export class ContextEngine {
 
     // Normalize scores to [0, 1] so threshold filtering remains meaningful
     const maxScore = sorted.length > 0 ? sorted[0].score : 1;
-    return sorted.map(({ score, memory }) => ({
+    const normalized = sorted.map(({ score, memory, keywordRank, vectorRank, keywordScore, vectorScore }) => ({
       ...memory,
       similarity: maxScore > 0 ? score / maxScore : 0,
+      explanation: {
+        ...(memory.explanation ?? { boosts: [] }),
+        componentScores: {
+          ...(memory.explanation?.componentScores ?? { baseScore: memory.similarity }),
+          baseScore: maxScore > 0 ? score / maxScore : 0,
+          rrfScore: score,
+          keywordRank,
+          vectorRank,
+          bm25Rank: keywordRank,
+          bm25Score: keywordScore,
+          vectorScore,
+        },
+        boosts: memory.explanation?.boosts ?? [],
+      },
+    }));
+
+    if (!options.query && !options.explain && !options.dedupeRepresentations) {
+      return normalized;
+    }
+
+    const shouldAlterRanking = Boolean(options.scoringProfile || options.dedupeRepresentations);
+    const candidates = normalized.map((memory) => buildRetrievalCandidate({
+      memory,
+      layer: memory.layer,
+      baseScore: memory.similarity,
+      components: memory.explanation?.componentScores,
+    }));
+    const scored = scoreRetrievalCandidates(candidates, extractQueryFeatures(options.query ?? ''), {
+      profile: options.scoringProfile,
+      explain: options.explain,
+      dedupeRepresentations: options.dedupeRepresentations,
+    }).slice(0, limit);
+
+    if (shouldAlterRanking) return scored;
+
+    const explanationsById = new Map(scored.map((memory) => [memory.id, memory.explanation]));
+    return normalized.map((memory) => ({
+      ...memory,
+      explanation: explanationsById.get(memory.id) ?? memory.explanation,
+    }));
+  }
+
+  private async applyRetrievalQuality(query: string, rows: RankedMemory[], options: RecallOptions): Promise<RankedMemory[]> {
+    if (!options.explain && !options.scoringProfile && !options.dedupeRepresentations) {
+      return rows;
+    }
+
+    const shouldAlterRanking = Boolean(options.scoringProfile || options.dedupeRepresentations);
+    const candidates = rows.map((memory) => buildRetrievalCandidate({
+      memory,
+      layer: memory.layer,
+      baseScore: memory.similarity,
+      components: memory.explanation?.componentScores,
+    }));
+    const scored = scoreRetrievalCandidates(candidates, extractQueryFeatures(query, options.asOf), {
+      profile: options.scoringProfile,
+      explain: options.explain,
+      dedupeRepresentations: options.dedupeRepresentations,
+      nowMs: options.asOf,
+    });
+
+    if (shouldAlterRanking) return scored;
+
+    const explanationsById = new Map(scored.map((memory) => [memory.id, memory.explanation]));
+    return rows.map((memory) => ({
+      ...memory,
+      explanation: explanationsById.get(memory.id) ?? memory.explanation,
     }));
   }
 
@@ -854,7 +1435,7 @@ export class ContextEngine {
     const lastSeenMs = this.l2.getLastSeen();
 
     let offlineGap: OfflineGap | null = null;
-    let recentMemories = [] as import('./types.js').Memory[];
+    let recentMemories: Memory[] = [];
 
     if (lastSeenMs !== null) {
       // lastSeenMs is guaranteed non-null inside this block
@@ -1149,6 +1730,16 @@ export class ContextEngine {
       checks.push({ name: 'l3.embedding_model', status: 'warn', detail: (err as Error).message });
     }
 
+    try {
+      const graphHealth = this.graph.health({
+        memoryExists: (id) => !!this.l1.get(id),
+        fileExists: (filePath) => existsSync(`${this.projectPath}/${filePath}`),
+      });
+      checks.push(...graphHealth.checks);
+    } catch (err) {
+      checks.push({ name: 'graph.sqlite', status: 'fail', detail: (err as Error).message });
+    }
+
     const status = checks.some(c => c.status === 'fail') ? 'degraded' : 'ok';
     return { status, checks };
   }
@@ -1170,6 +1761,7 @@ export class ContextEngine {
     // Close code index
     this.codeIndex?.close();
     this.codeIndex = null;
+    this.graph.close();
 
     // Close layers
     this.l1.clear();
@@ -1284,6 +1876,87 @@ export class ContextEngine {
     }
 
     return { imported, skipped, errors };
+  }
+
+  private projectMemoryToGraph(memory: Memory, layer: MemoryLayer): void {
+    const validFrom = memory.metadata?.temporal?.validFrom ?? Number(memory.createdAt);
+    const validUntil = memory.metadata?.temporal?.validUntil ?? null;
+    const memoryEntity = this.graph.upsertEntity({
+      kind: 'memory',
+      key: `memory:${memory.id}`,
+      name: memory.metadata?.title ?? memory.content.substring(0, 80),
+      sourceMemoryId: memory.id,
+      validFrom,
+      validUntil,
+      metadata: { type: memory.type, layer, tags: memory.tags ?? memory.metadata?.tags ?? [] },
+    });
+    const project = this.graph.upsertEntity({
+      kind: 'project',
+      key: `project:${this.projectPath}`,
+      name: this.projectPath,
+      metadata: { projectPath: this.projectPath },
+    });
+    this.graph.upsertRelationship({ type: 'scoped_to', fromEntityId: memoryEntity.id, toEntityId: project.id, sourceMemoryId: memory.id, validFrom });
+
+    const sessionId = memory.metadata?.sessionId ?? memory.metadata?.provenance?.sessionId;
+    if (typeof sessionId === 'string' && sessionId.length > 0) {
+      const session = this.graph.upsertEntity({ kind: 'session', key: `session:${sessionId}`, name: sessionId, metadata: { sessionId } });
+      this.graph.upsertRelationship({ type: 'written_in', fromEntityId: memoryEntity.id, toEntityId: session.id, sourceMemoryId: memory.id, validFrom });
+    }
+
+    if (memory.metadata?.fileContext?.path) {
+      const fileContextMetadata = memory.metadata.fileContext as unknown as Record<string, unknown>;
+      const file = this.graph.upsertEntity({ kind: 'file', key: `file:${memory.metadata.fileContext.path}`, name: memory.metadata.fileContext.path, metadata: fileContextMetadata });
+      this.graph.upsertRelationship({ type: 'mentions', fromEntityId: memoryEntity.id, toEntityId: file.id, sourceMemoryId: memory.id, validFrom });
+    }
+
+    if (memory.type === 'decision') {
+      const decision = this.graph.upsertEntity({
+        kind: 'decision',
+        key: `decision:${memory.id}`,
+        name: memory.metadata?.title ?? (memory.metadata?.decision as string | undefined) ?? memory.content.substring(0, 80),
+        sourceMemoryId: memory.id,
+        validFrom,
+        validUntil,
+        metadata: { layer, rationale: memory.metadata?.rationale },
+      });
+      this.graph.upsertRelationship({ type: 'recorded_as', fromEntityId: decision.id, toEntityId: memoryEntity.id, sourceMemoryId: memory.id, validFrom });
+      this.graph.upsertRelationship({ type: 'decides_for', fromEntityId: decision.id, toEntityId: project.id, sourceMemoryId: memory.id, validFrom, validUntil });
+    }
+
+    if (memory.type === 'bug_fix') {
+      const error = this.graph.upsertEntity({
+        kind: 'error',
+        key: `error:${memory.id}`,
+        name: (memory.metadata?.error as string | undefined) ?? memory.content.substring(0, 80),
+        sourceMemoryId: memory.id,
+        validFrom,
+        metadata: { command: memory.metadata?.command, context: memory.metadata?.context },
+      });
+      this.graph.upsertRelationship({ type: 'recorded_as', fromEntityId: error.id, toEntityId: memoryEntity.id, sourceMemoryId: memory.id, validFrom });
+      if (typeof memory.metadata?.command === 'string') {
+        const command = this.graph.upsertEntity({ kind: 'task', key: `command:${memory.metadata.command}`, name: memory.metadata.command, metadata: { kind: 'command' } });
+        this.graph.upsertRelationship({ type: 'caused_by', fromEntityId: error.id, toEntityId: command.id, sourceMemoryId: memory.id, validFrom });
+      }
+    }
+  }
+
+  private projectSupersessionToGraph(oldMemoryId: string, newMemoryId: string): void {
+    const oldDecision = this.graph.findEntities({ kind: 'decision', sourceMemoryId: oldMemoryId })[0];
+    const newDecision = this.graph.findEntities({ kind: 'decision', sourceMemoryId: newMemoryId })[0];
+    if (!oldDecision || !newDecision) return;
+    const at = newDecision.validFrom;
+    this.graph.upsertRelationship({ type: 'supersedes', fromEntityId: newDecision.id, toEntityId: oldDecision.id, sourceMemoryId: newMemoryId, validFrom: at });
+    const project = this.graph.findEntities({ kind: 'project', key: `project:${this.projectPath}` })[0];
+    if (project) {
+      this.graph.supersedeRelationship({
+        type: 'decides_for',
+        fromEntityId: oldDecision.id,
+        toEntityId: project.id,
+        supersededBy: { fromEntityId: newDecision.id, toEntityId: project.id, sourceMemoryId: newMemoryId, validFrom: at },
+        at,
+      });
+    }
   }
 
   // ============================================================================

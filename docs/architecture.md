@@ -39,7 +39,7 @@ graph TB
     end
 
     subgraph Server["Context Fabric MCP Server"]
-        TH["Tool Handlers\n25 MCP tools"]
+        TH["Tool Handlers\n29 MCP tools"]
         CE["Context Engine\nOrchestrator"]
         SR["Smart Router\ncontent → layer"]
         TS["Time Service\nIANA tz, anchors, gaps"]
@@ -54,6 +54,8 @@ graph TB
             ES["Embedding Service\nfastembed-js / ONNX"]
             PE["Pattern Extractor"]
             EH["Event Handler"]
+            FG["Fabric Graph\nTemporal entities + edges"]
+            CI["Code Indexer\nSymbols, chunks, repair"]
         end
 
         TH --> CE
@@ -65,6 +67,8 @@ graph TB
         CE --> ES
         CE --> PE
         CE --> EH
+        CE --> FG
+        CE --> CI
     end
 
     Clients -->|"MCP Protocol\n(JSON-RPC over stdio)"| TH
@@ -82,7 +86,7 @@ graph TB
 - **Per-project engines**: Each unique `projectPath` gets its own `ContextEngine` instance with isolated L2 state. L3 is shared globally.
 
 > [!NOTE]
-> As of v0.12, the MCP server exposes three separate primitives — **Tools** (25 of them, LLM-initiated), **Resources** (`memory://...` URIs, user/client-browseable), and **Prompts** (`cf-*` slash-commands). See [MCP Primitives](mcp-primitives.md) for the full catalog. Skills are stored at L2 with `type='skill'` and a structured `metadata.skill` block; they piggyback on the L2 store so they automatically inherit backup, export/import, and FTS5 search.
+> As of v0.14, the MCP server exposes three separate primitives — **Tools** (29 of them, LLM-initiated), **Resources** (`memory://...` URIs, user/client-browseable), and **Prompts** (`cf-*` slash-commands). See [MCP Primitives](mcp-primitives.md) for the full catalog. Skills are stored at L2 with `type='skill'` and a structured `metadata.skill` block; they piggyback on the L2 store so they automatically inherit backup, export/import, and FTS5 search. v0.14 also adds scoped fabric graph tools and code-index repair operations.
 
 ## The Three Layers
 

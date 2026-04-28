@@ -235,12 +235,75 @@ export interface GhostMessage {
   trigger: string; // what triggered this ghost message
 }
 
+export interface ActiveCodeSymbol {
+  name: string;
+  kind: string;
+  signature: string | null;
+  lineStart: number;
+  lineEnd: number | null;
+  docComment: string | null;
+}
+
+export interface ActiveCodeChunk {
+  filePath: string;
+  lineStart: number;
+  lineEnd: number;
+  content?: string;
+  similarity?: number;
+  source: "text" | "semantic" | "nearby";
+}
+
+export interface ActiveCodeContext {
+  filePath?: string;
+  language?: string;
+  activeSymbol?: ActiveCodeSymbol;
+  symbols: ActiveCodeSymbol[];
+  chunks: ActiveCodeChunk[];
+  relatedMemoryIds: string[];
+  indexStatus?: {
+    totalFiles: number;
+    totalSymbols: number;
+    totalChunks: number;
+    lastIndexedAt: number | null;
+    isStale: boolean;
+  };
+}
+
+export interface ContextSection {
+  id: string;
+  title: string;
+  priority: number;
+  items: unknown[];
+}
+
+export interface CurrentContextQuerySnapshot {
+  sessionId?: string;
+  activeFile?: string;
+  activeSymbol?: string;
+  currentCommand?: string;
+  errorSignature?: string;
+  language?: string;
+  projectPath: string;
+  branch?: string;
+  recentFiles: string[];
+}
+
 export interface ContextWindow {
   working: Memory[];
   relevant: Memory[];
   patterns: CodePattern[];
   suggestions: Suggestion[];
   ghostMessages: GhostMessage[];
+  /** v0.13: code-aware active-file/symbol/chunk context for coding agents. */
+  activeCode?: ActiveCodeContext;
+  /** v0.13: current decisions most relevant to the active code/command context. */
+  relatedDecisions?: Memory[];
+  /** v0.13: recent or command-related errors promoted into a bounded section. */
+  recentErrors?: Memory[];
+  /** v0.13: predictable high-level sections for clients that prefer sectioned context. */
+  sections?: ContextSection[];
+  /** v0.13: normalized query signals that shaped the context window. */
+  query?: CurrentContextQuerySnapshot;
 }
 
 // ============================================================================

@@ -8,7 +8,7 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { readFileSync, statSync, mkdirSync, existsSync } from 'fs';
 import { createHash } from 'crypto';
-import { join } from 'path';
+import { join, relative, resolve } from 'path';
 import type { EmbeddingService } from '../embedding.js';
 import type { FabricConfig } from '../types.js';
 import { sanitizeFTS5Query } from '../fts5.js';
@@ -61,6 +61,27 @@ export interface IndexStatus {
   totalChunks: number;
   lastIndexedAt: number | null;
   isStale: boolean;
+}
+
+export interface IndexHealthIssue {
+  type: 'stale_index' | 'missing_file' | 'missing_embedding';
+  severity: 'warn' | 'fail';
+  filePath?: string;
+  detail: string;
+}
+
+export interface IndexHealthReport {
+  status: 'ok' | 'degraded';
+  index: IndexStatus;
+  issues: IndexHealthIssue[];
+}
+
+export interface IndexRepairResult {
+  checked: number;
+  reindexed: number;
+  deleted: number;
+  issuesBefore: IndexHealthIssue[];
+  issuesAfter: IndexHealthIssue[];
 }
 
 // ============================================================================
@@ -221,6 +242,8 @@ export class CodeIndex {
 
     if (opts.symbolKind) {
       rows = this.stmtSearchSymbolsByKind.all(opts.symbolKind) as unknown as SymbolRow[];
+    } else if (query.trim().length === 0) {
+      rows = this.stmtSearchSymbolsByName.all('%') as unknown as SymbolRow[];
     } else {
       // Get all symbols and filter by name match
       rows = this.stmtSearchSymbolsByName.all(`%${query}%`) as unknown as SymbolRow[];
@@ -342,9 +365,11 @@ export class CodeIndex {
    *   we don't re-stat / re-hash the file when the caller already did.
    */
   async reindexFile(
-    relativePath: string,
+    filePath: string,
     precomputed?: { hash?: string; mtimeMs?: number; sizeBytes?: number },
   ): Promise<void> {
+    const relativePath = this.normalizeProjectPath(filePath);
+    if (!relativePath || !isIndexableExtension(relativePath)) return;
     const fullPath = join(this.projectPath, relativePath);
 
     if (!existsSync(fullPath)) {
@@ -532,7 +557,9 @@ export class CodeIndex {
   }
 
   getFileSymbols(filePath: string): ExtractedSymbol[] {
-    const rows = this.stmtGetFileSymbols.all(filePath) as unknown as SymbolRow[];
+    const normalized = this.normalizeProjectPath(filePath);
+    if (!normalized) return [];
+    const rows = this.stmtGetFileSymbols.all(normalized) as unknown as SymbolRow[];
     return rows.map(row => ({
       name: row.name,
       kind: row.kind as ExtractedSymbol['kind'],
@@ -541,6 +568,85 @@ export class CodeIndex {
       signature: row.signature,
       docComment: row.doc_comment,
     }));
+  }
+
+  getActiveSymbol(filePath: string, line?: number): ExtractedSymbol | null {
+    const symbols = this.getFileSymbols(filePath);
+    if (symbols.length === 0) return null;
+    if (line !== undefined) {
+      const containing = symbols
+        .filter((symbol) => symbol.lineStart <= line && (symbol.lineEnd ?? symbol.lineStart) >= line)
+        .sort((a, b) => (b.lineStart - a.lineStart) || ((a.lineEnd ?? Number.MAX_SAFE_INTEGER) - (b.lineEnd ?? Number.MAX_SAFE_INTEGER)))[0];
+      if (containing) return containing;
+    }
+    return symbols[0] ?? null;
+  }
+
+  normalizeProjectPath(filePath: string | undefined): string | null {
+    if (!filePath) return null;
+    const absolute = resolve(this.projectPath, filePath);
+    const projectRoot = resolve(this.projectPath);
+    const relativePath = relative(projectRoot, absolute).replace(/\\/g, '/');
+    if (relativePath === '' || relativePath.startsWith('..') || resolve(absolute) === projectRoot) return null;
+    return relativePath;
+  }
+
+  getHealth(): IndexHealthReport {
+    const index = this.getStatus();
+    const issues: IndexHealthIssue[] = [];
+    if (index.isStale) {
+      issues.push({ type: 'stale_index', severity: 'warn', detail: 'Code index has not been refreshed recently.' });
+    }
+
+    const files = this.stmtGetAllFiles.all() as unknown as FileRow[];
+    for (const file of files) {
+      if (!existsSync(join(this.projectPath, file.path))) {
+        issues.push({ type: 'missing_file', severity: 'warn', filePath: file.path, detail: 'Indexed file no longer exists on disk.' });
+      }
+    }
+
+    const chunkRows = this.stmtGetAllChunks.all() as unknown as ChunkRow[];
+    for (const row of chunkRows) {
+      try {
+        const embedding = JSON.parse(row.embedding) as unknown;
+        if (this.embeddingService && Array.isArray(embedding) && embedding.length === 0) {
+          issues.push({ type: 'missing_embedding', severity: 'warn', filePath: row.file_path, detail: 'Chunk has no embedding despite an available embedding service.' });
+          break;
+        }
+      } catch {
+        issues.push({ type: 'missing_embedding', severity: 'warn', filePath: row.file_path, detail: 'Chunk embedding JSON is corrupted.' });
+        break;
+      }
+    }
+
+    return { status: issues.some((issue) => issue.severity === 'fail') ? 'degraded' : issues.length > 0 ? 'degraded' : 'ok', index, issues };
+  }
+
+  async repair(options: { dryRun?: boolean } = {}): Promise<IndexRepairResult> {
+    const before = this.getHealth();
+    let deleted = 0;
+    let reindexed = 0;
+    const files = this.stmtGetAllFiles.all() as unknown as FileRow[];
+
+    if (!options.dryRun) {
+      for (const file of files) {
+        if (!existsSync(join(this.projectPath, file.path))) {
+          this.deleteFileFromIndex(file.path);
+          deleted++;
+        }
+      }
+      await this.incrementalUpdate();
+      reindexed = this.getStatus().totalFiles;
+    }
+
+    const after = options.dryRun ? before : this.getHealth();
+    return {
+      checked: files.length,
+      reindexed,
+      deleted,
+      issuesBefore: before.issues,
+      issuesAfter: after.issues,
+    };
   }
 
   // ============================================================================
@@ -676,9 +782,23 @@ export class CodeIndex {
       'INSERT INTO chunks (file_path, chunk_idx, line_start, line_end, content, embedding) VALUES (?, ?, ?, ?, ?, ?)'
     );
 
-    this.stmtSearchSymbolsByName = this.db.prepare(
-      'SELECT s.*, f.language FROM symbols s JOIN indexed_files f ON s.file_path = f.path WHERE s.name LIKE ?'
-    );
+    this.stmtSearchSymbolsByName = this.db.prepare(`
+      SELECT s.*, f.language
+      FROM symbols s
+      JOIN indexed_files f ON s.file_path = f.path
+      WHERE s.name LIKE ?
+      ORDER BY CASE s.kind
+        WHEN 'class' THEN 0
+        WHEN 'interface' THEN 1
+        WHEN 'type' THEN 2
+        WHEN 'enum' THEN 3
+        WHEN 'function' THEN 4
+        WHEN 'method' THEN 5
+        WHEN 'const' THEN 6
+        WHEN 'export' THEN 7
+        ELSE 8
+      END, s.file_path, s.line_start
+    `);
     this.stmtSearchSymbolsByKind = this.db.prepare(
       'SELECT s.*, f.language FROM symbols s JOIN indexed_files f ON s.file_path = f.path WHERE s.kind = ?'
     );

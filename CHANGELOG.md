@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-04-29
+
+### Theme: Explainable retrieval, scoped fabric graph, and code-aware context
+
+This release keeps the low-latency local retrieval stack from v0.13 and adds the
+observability and structure needed to improve agent context quality safely:
+explainable retrieval scoring, per-question benchmark artifacts, a scoped
+bi-temporal fabric graph, and code-aware current-context construction.
+
+Headline validation on the same commodity workstation profile (Ryzen 7 5800H +
+RTX 3060 12 GB, BGE base v1.5 on CUDA where noted):
+
+| Benchmark | Metric | v0.13 published | v0.14 rerun |
+|---|---|---:|---:|
+| BEIR SciFact | nDCG@10 | 0.7439 | **0.7456** |
+| BEIR SciFact | Recall@10 | 0.8709 | **0.8726** |
+| BEIR FiQA-2018 | nDCG@10 | 0.3801 | **0.3809** |
+| BEIR FiQA-2018 | Recall@10 | 0.4623 | **0.4654** |
+| LongMemEval_S | Hit@5 | 0.9520 | 0.9200 |
+| LongMemEval_S | Recall@10 | 0.9472 | 0.9210 |
+
+LongMemEval was re-run during release prep because the historical v0.13 number
+was not reproducible from the original workspace under the current cached
+runtime/dataset environment. The release therefore keeps the new diagnostic
+artifact path and ranking-preservation tests rather than tuning against a stale
+single number.
+
+### Added
+- **Explainable retrieval-quality scoring** — `context.recall` can now return
+  deterministic component scores, boosts, provenance, and scoring profiles via
+  `explain` / `scoringProfile` without changing the default RRF ranking path.
+- **LongMemEval artifact output** — `BENCH_ARTIFACT_JSONL=/path/file.jsonl`
+  records per-question rankings, component scores, provenance, boosts, latency,
+  and top-candidate diagnostics for systematic benchmark debugging.
+- **Scoped fabric temporal graph** — new `src/fabric-graph.ts` models projects,
+  sessions, files, symbols, memories, decisions, errors, and skills as temporal
+  entities/relationships with graph query/export/import operations.
+- **Graph MCP tools** — `context.graph.query`, `context.graph.export`, and
+  `context.graph.import` expose neighbors, timelines, paths, decision lineage,
+  current/as-of decision queries, and deterministic graph backup/import.
+- **Code-index repair tool** — `context.codeIndexRepair` inspects stale indexes,
+  deleted files, and missing/corrupted chunk embeddings, with `dryRun` support.
+- **Current-context sections** — `context.getCurrent` now builds bounded,
+  code-aware sections for active file/symbol context, command/error context,
+  recent files, related decisions, recent errors, ghost messages, and suggested
+  follow-ups.
+- **Regression tests** — new coverage for retrieval explanations, benchmark
+  artifact generation, graph primitives, current-context ranking, path
+  normalization, symbol extraction, and code-index repair.
+
+### Changed
+- **Code-aware context ranking** — current-context construction now uses the
+  active file, active symbol, branch, current command, recent errors, related
+  decisions, and code-index hits to prioritize what an agent sees first.
+- **Symbol extraction** — TypeScript/JavaScript indexing now captures imports,
+  exports, methods, interfaces, type aliases, enums, constants, and test
+  declarations more accurately while preserving stable definition-first ranking.
+- **Public benchmark docs** — benchmark documentation now separates published
+  v0.13 baseline numbers from the v0.14 rerun and documents artifact output for
+  reproducible regression analysis.
+- **MCP tool surface** — the server now exposes 29 tools, adding graph and
+  code-index repair operations while keeping existing memory, skill, setup,
+  observability, backup, and import/export flows.
+
+### Fixed
+- **Diagnostic mode no longer changes ranking** — `explain: true` and benchmark
+  artifact output are now diagnostic-only. They preserve original RRF order and
+  similarity values unless an explicit non-default scoring profile is requested.
+- **Code-index path normalization** — current-file handling now behaves
+  consistently for absolute paths, relative paths, outside-project paths, and
+  deleted files.
+- **Code-index health/repair edge cases** — stale, missing, and corrupted index
+  state is reported and repairable without requiring manual cache cleanup.
+
 ## [0.13.0] - 2026-04-23
 
 ### Theme: Retrieval quality and throughput — public benchmarks, BGE v1.5, GPU, prefix fix

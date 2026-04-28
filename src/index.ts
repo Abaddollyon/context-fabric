@@ -38,6 +38,9 @@ export {
   type ExtractedPattern,
 } from './patterns.js';
 
+// Graph
+export { FabricGraphService, type FabricEntityKind, type FabricEntity, type FabricRelationship } from './fabric-graph.js';
+
 // Events
 export { 
   EventHandler, 

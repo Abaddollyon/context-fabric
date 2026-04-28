@@ -41,6 +41,7 @@ import { performance } from 'node:perf_hooks';
 
 import { ContextEngine } from '../../dist/engine.js';
 import { MemoryLayer } from '../../dist/types.js';
+import type { ScoringProfileName } from '../../src/retrieval-quality.js';
 
 import {
   loadLongMemEval,
@@ -50,12 +51,18 @@ import {
 } from './lib/longmemeval.ts';
 import { bulkIngestL3, benchDocId, type Doc } from './lib/ingest.ts';
 import { hitAtK, recallAtK, percentile } from './lib/metrics.ts';
+import { writePerQuestionArtifact, type PerQuestionArtifactCandidate } from './lib/artifacts.ts';
 
 const VARIANT = process.env.LME_VARIANT ?? 'longmemeval_s';
 const CACHE_ROOT = process.env.BENCH_CACHE ?? path.resolve('.bench-cache');
 const DATA_FILE = path.join(CACHE_ROOT, 'longmemeval', `${VARIANT}.json`);
 const INGEST_BATCH = intEnv('BENCH_INGEST_BATCH', 64);
 const QUESTION_LIMIT = intEnv('BENCH_QUESTION_LIMIT', 0) || Infinity;
+const ARTIFACT_JSONL = process.env.BENCH_ARTIFACT_JSONL;
+const SCORING_PROFILE = resolveLongMemEvalScoringProfile({
+  artifactJsonl: ARTIFACT_JSONL,
+  scoringProfile: process.env.BENCH_SCORING_PROFILE,
+});
 
 const KS = [1, 5, 10, 50];
 
@@ -66,12 +73,36 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+export function resolveLongMemEvalScoringProfile(input: {
+  artifactJsonl?: string;
+  scoringProfile?: string;
+}): ScoringProfileName | undefined {
+  switch (input.scoringProfile) {
+    case undefined:
+    case '':
+      return undefined;
+    case 'default':
+    case 'benchmark':
+    case 'code':
+    case 'temporal':
+    case 'preference':
+      return input.scoringProfile;
+    default:
+      throw new Error(`Unsupported BENCH_SCORING_PROFILE: ${input.scoringProfile}`);
+  }
+}
+
 interface PerQuestionMetric {
   question_type: string;
   hits: Record<number, number>;
   recalls: Record<number, number>;
   latencyMs: number;
   sessions: number;
+  question_id: string;
+  question: string;
+  answer_session_ids: string[];
+  ranking: string[];
+  topCandidates: PerQuestionArtifactCandidate[];
 }
 
 async function runOne(q: LmeQuestion, tmpRoot: string): Promise<PerQuestionMetric> {
@@ -102,13 +133,26 @@ async function runOne(q: LmeQuestion, tmpRoot: string): Promise<PerQuestionMetri
       limit: Math.max(...KS),
       mode: 'hybrid',
       layers: [MemoryLayer.L3_SEMANTIC],
+      explain: Boolean(ARTIFACT_JSONL),
+      scoringProfile: SCORING_PROFILE,
     });
     const latencyMs = performance.now() - t0;
 
     const ranking: string[] = [];
+    const topCandidates: PerQuestionArtifactCandidate[] = [];
     for (const h of hits) {
       const id = benchDocId(h);
       if (id) ranking.push(id);
+      topCandidates.push({
+        memoryId: h.id,
+        benchDocId: id,
+        similarity: h.similarity,
+        componentScores: h.explanation?.componentScores as Record<string, unknown> | undefined,
+        representationKind: h.explanation?.representationKind ?? (h.metadata?.representation as { kind?: string } | undefined)?.kind,
+        sourceSpan: h.explanation?.provenance?.sourceSpan,
+        provenance: h.explanation?.provenance as Record<string, unknown> | undefined,
+        boosts: h.explanation?.boosts,
+      });
     }
 
     // Build a rel map where each gold session has relevance 1.
@@ -122,13 +166,24 @@ async function runOne(q: LmeQuestion, tmpRoot: string): Promise<PerQuestionMetri
       recallMap[k] = recallAtK(ranking, rels, k);
     }
 
-    return {
+    const metric = {
       question_type: q.question_type,
       hits: hitsMap,
       recalls: recallMap,
       latencyMs,
       sessions: docs.length,
+      question_id: q.question_id,
+      question: q.question,
+      answer_session_ids: q.answer_session_ids,
+      ranking,
+      topCandidates,
     };
+
+    if (ARTIFACT_JSONL) {
+      writePerQuestionArtifact(ARTIFACT_JSONL, metric);
+    }
+
+    return metric;
   } finally {
     engine.close();
     fs.rmSync(projectPath, { recursive: true, force: true });
@@ -253,7 +308,9 @@ function aggregate(samples: PerQuestionMetric[]): {
   return { n: samples.length, hits, recalls };
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

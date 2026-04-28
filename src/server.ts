@@ -109,6 +109,12 @@ export const RecallSchema = z.object({
     .describe('Include memories that have been explicitly superseded. Default false (only currently-valid memories are returned).'),
   asOf: z.number().int().positive().optional()
     .describe('Epoch ms. Query the state of memory as it existed at this point in time. Overrides the default "hide superseded" behavior with bi-temporal windowing.'),
+  scoringProfile: z.enum(["default", "benchmark", "code", "temporal", "preference"]).optional()
+    .describe('Optional deterministic scoring profile. Default preserves existing balanced behavior.'),
+  explain: z.boolean().default(false)
+    .describe('Include retrieval explanations/debug scores such as BM25/vector ranks, RRF score, boosts, temporal match, representation kind, and provenance.'),
+  dedupeRepresentations: z.boolean().default(false)
+    .describe('Collapse linked representations to one result per source evidence item. Default false for backward compatibility.'),
 }).strict();
 
 export const GetCurrentContextSchema = z.object({
@@ -120,6 +126,12 @@ export const GetCurrentContextSchema = z.object({
     .describe("Filter patterns by language (e.g. 'typescript', 'python')."),
   filePath: z.string().optional()
     .describe("Filter patterns by file path."),
+  cursorLine: z.number().int().positive().optional()
+    .describe('Optional active cursor line for active-symbol detection.'),
+  currentLine: z.number().int().positive().optional()
+    .describe('Alias for cursorLine for clients that send current line metadata.'),
+  errorOutput: z.string().optional()
+    .describe('Optional failing command/error output for error-aware context retrieval.'),
 }).strict();
 
 export const SummarizeSchema = z.object({
@@ -184,6 +196,11 @@ export const SearchCodeSchema = z.object({
   threshold: z.number().min(0).max(1).default(0.5),
   includeContent: z.boolean().default(true),
   projectPath: z.string().optional(),
+}).strict();
+
+export const CodeIndexRepairSchema = z.object({
+  projectPath: z.string().optional(),
+  dryRun: z.boolean().default(false),
 }).strict();
 
 export const GetMemorySchema = z.object({
@@ -284,6 +301,36 @@ export const HealthSchema = z.object({
   projectPath: z.string().optional(),
 }).strict();
 
+export const GraphQuerySchema = z.object({
+  op: z.enum(["neighbors", "lineage", "decisions", "timeline", "path"]),
+  entityId: z.string().optional(),
+  fromEntityId: z.string().optional(),
+  toEntityId: z.string().optional(),
+  direction: z.enum(["out", "in", "both"]).optional().default("both"),
+  type: z.string().optional(),
+  asOf: z.number().int().positive().optional(),
+  currentOnly: z.boolean().optional().default(false),
+  maxDepth: z.number().int().positive().max(12).optional().default(4),
+  projectPath: z.string().optional(),
+}).strict().superRefine((data, ctx) => {
+  if (["neighbors", "lineage", "timeline"].includes(data.op) && !data.entityId) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${data.op} requires entityId`, path: ["entityId"] });
+  }
+  if (data.op === "path" && (!data.fromEntityId || !data.toEntityId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "path requires fromEntityId and toEntityId", path: ["fromEntityId"] });
+  }
+});
+
+export const GraphExportSchema = z.object({
+  destPath: z.string().min(1),
+  projectPath: z.string().optional(),
+}).strict();
+
+export const GraphImportSchema = z.object({
+  srcPath: z.string().min(1),
+  projectPath: z.string().optional(),
+}).strict();
+
 // v0.12: Skills (procedural memory) schemas.
 
 const SkillParameterSchema = z.object({
@@ -367,6 +414,9 @@ const TOOLS: Tool[] = [
         projectPath: { type: "string", description: "Project path for context" },
         language: { type: "string", description: "Filter patterns by language (e.g. 'typescript', 'python')" },
         filePath: { type: "string", description: "Filter patterns by file path" },
+        cursorLine: { type: "number", description: "Optional active cursor line for active-symbol detection" },
+        currentLine: { type: "number", description: "Alias for cursorLine for clients that send current line metadata" },
+        errorOutput: { type: "string", description: "Optional failing command/error output for error-aware context retrieval" },
       },
       required: [],
     },
@@ -448,6 +498,13 @@ const TOOLS: Tool[] = [
           },
         },
         sessionId: { type: "string" },
+        scoringProfile: {
+          type: "string",
+          enum: ["default", "benchmark", "code", "temporal", "preference"],
+          description: "Optional deterministic scoring profile. Default preserves existing balanced behavior.",
+        },
+        explain: { type: "boolean", default: false, description: "Include retrieval explanations/debug scores in results." },
+        dedupeRepresentations: { type: "boolean", default: false, description: "Collapse linked representations to one result per source evidence item." },
       },
       required: ["query"],
     },
@@ -552,6 +609,17 @@ const TOOLS: Tool[] = [
         projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "context.codeIndexRepair",
+    description: "Inspect and optionally repair the project code index. Detects stale indexes, deleted files, and missing or corrupted chunk embeddings; with dryRun=true it reports issues without mutating the index.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectPath: { type: "string", description: "Project path. Defaults to the current working directory." },
+        dryRun: { type: "boolean", default: false, description: "If true, report issues without repairing." },
+      },
     },
   },
   {
@@ -726,6 +794,50 @@ const TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: { projectPath: { type: "string" } },
+    },
+  },
+  {
+    name: "context.graph.query",
+    description: "Query the scoped fabric temporal graph for neighbors, timelines, decision lineage, current/as-of decisions, or short paths.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        op: { type: "string", enum: ["neighbors", "lineage", "decisions", "timeline", "path"] },
+        entityId: { type: "string", description: "Entity id for neighbors, lineage, or timeline." },
+        fromEntityId: { type: "string", description: "Path source entity id." },
+        toEntityId: { type: "string", description: "Path target entity id." },
+        direction: { type: "string", enum: ["out", "in", "both"], default: "both" },
+        type: { type: "string", description: "Optional relationship type filter." },
+        asOf: { type: "number", description: "Epoch ms for temporal as-of queries." },
+        currentOnly: { type: "boolean", default: false, description: "For decisions, return only currently-effective decisions." },
+        maxDepth: { type: "number", default: 4, description: "Maximum path traversal depth." },
+        projectPath: { type: "string" },
+      },
+      required: ["op"],
+    },
+  },
+  {
+    name: "context.graph.export",
+    description: "Export scoped fabric graph entities and relationships to deterministic JSON for backup, migration, or rebuild validation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        destPath: { type: "string", description: "Absolute JSON path to write." },
+        projectPath: { type: "string" },
+      },
+      required: ["destPath"],
+    },
+  },
+  {
+    name: "context.graph.import",
+    description: "Import scoped fabric graph JSON previously produced by context.graph.export.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        srcPath: { type: "string", description: "Absolute JSON path to read." },
+        projectPath: { type: "string" },
+      },
+      required: ["srcPath"],
     },
   },
   // v0.12: Skills — procedural memory (reusable instruction blocks invokable by slug).
@@ -928,7 +1040,16 @@ async function handleGetCurrent(args: unknown): Promise<unknown> {
   const params = GetCurrentContextSchema.parse(args);
   const engine = getEngine(params.projectPath);
 
-  const contextWindow = await engine.getContextWindow();
+  const contextWindow = await engine.getContextWindow({
+    sessionId: params.sessionId,
+    currentFile: params.currentFile,
+    currentCommand: params.currentCommand,
+    language: params.language,
+    filePath: params.filePath,
+    cursorLine: params.cursorLine,
+    currentLine: params.currentLine,
+    errorOutput: params.errorOutput,
+  });
 
   // If language/filePath filter specified, re-rank patterns
   if (params.language || params.filePath) {
@@ -980,6 +1101,9 @@ async function handleRecall(args: unknown): Promise<unknown> {
     },
     includeSuperseded: params.includeSuperseded,
     asOf: params.asOf,
+    scoringProfile: params.scoringProfile,
+    explain: params.explain,
+    dedupeRepresentations: params.dedupeRepresentations,
   });
   
   // Filter by threshold, then apply offset/limit pagination.
@@ -999,6 +1123,7 @@ async function handleRecall(args: unknown): Promise<unknown> {
       },
       similarity: r.similarity,
       layer: r.layer,
+      ...(params.explain ? { explanation: r.explanation } : {}),
     })),
     total: filtered.length,
     offset: params.offset,
@@ -1132,6 +1257,20 @@ async function handleSearchCode(args: unknown): Promise<unknown> {
       isStale: status.isStale,
     },
     total: results.length,
+  };
+}
+
+async function handleCodeIndexRepair(args: unknown): Promise<unknown> {
+  const params = CodeIndexRepairSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  const codeIndex = engine.getCodeIndex();
+  await codeIndex.ensureReady();
+  const before = codeIndex.getHealth();
+  const repair = await codeIndex.repair({ dryRun: params.dryRun });
+  return {
+    dryRun: params.dryRun,
+    health: params.dryRun ? before : codeIndex.getHealth(),
+    repair,
   };
 }
 
@@ -1357,6 +1496,38 @@ async function handleHealth(args: unknown): Promise<unknown> {
   const params = HealthSchema.parse(args);
   const engine = getEngine(params.projectPath);
   return engine.health();
+}
+
+async function handleGraphQuery(args: unknown): Promise<unknown> {
+  const params = GraphQuerySchema.parse(args);
+  const engine = getEngine(params.projectPath);
+
+  switch (params.op) {
+    case 'neighbors':
+      return { neighbors: engine.graph.neighbors(params.entityId!, { direction: params.direction, type: params.type, asOf: params.asOf }) };
+    case 'lineage':
+      return { lineage: engine.graph.explainDecisionLineage(params.entityId!) };
+    case 'decisions':
+      return { decisions: engine.graph.listDecisions({ asOf: params.asOf, currentOnly: params.currentOnly }) };
+    case 'timeline':
+      return { timeline: engine.graph.timeline(params.entityId!) };
+    case 'path':
+      return { path: engine.graph.findPath(params.fromEntityId!, params.toEntityId!, { maxDepth: params.maxDepth, asOf: params.asOf }) };
+    default:
+      throw new ToolError('VALIDATION_ERROR', `Unsupported graph query op: ${(params as { op: string }).op}`);
+  }
+}
+
+async function handleGraphExport(args: unknown): Promise<unknown> {
+  const params = GraphExportSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  return engine.graph.exportGraph(params.destPath);
+}
+
+async function handleGraphImport(args: unknown): Promise<unknown> {
+  const params = GraphImportSchema.parse(args);
+  const engine = getEngine(params.projectPath);
+  return engine.graph.importGraph(params.srcPath);
 }
 
 // ============================================================================
@@ -1908,6 +2079,9 @@ export async function createServer(): Promise<Server> {
         case "context.searchCode":
           result = await handleSearchCode(args);
           break;
+        case "context.codeIndexRepair":
+          result = await handleCodeIndexRepair(args);
+          break;
         case "context.get":
           result = await handleGetMemory(args);
           break;
@@ -1940,6 +2114,15 @@ export async function createServer(): Promise<Server> {
           break;
         case "context.health":
           result = await handleHealth(args);
+          break;
+        case "context.graph.query":
+          result = await handleGraphQuery(args);
+          break;
+        case "context.graph.export":
+          result = await handleGraphExport(args);
+          break;
+        case "context.graph.import":
+          result = await handleGraphImport(args);
           break;
         case "context.skill.create":
           result = await handleSkillCreate(args);

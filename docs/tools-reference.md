@@ -1,6 +1,6 @@
 # Tools Reference
 
-All 25 MCP tools with full parameter docs and example payloads. Your AI calls these automatically -- you rarely need to invoke them by hand.
+All 29 MCP tools with full parameter docs and example payloads. Your AI calls these automatically -- you rarely need to invoke them by hand.
 
 ## Table of Contents
 
@@ -14,6 +14,7 @@ All 25 MCP tools with full parameter docs and example payloads. Your AI calls th
   - [context.orient](#contextorient)
 - [Code Tools](#code-tools)
   - [context.searchCode](#contextsearchcode)
+  - [context.codeIndexRepair](#contextcodeindexrepair)
 - [CRUD Tools](#crud-tools)
   - [context.get](#contextget)
   - [context.update](#contextupdate)
@@ -38,6 +39,10 @@ All 25 MCP tools with full parameter docs and example payloads. Your AI calls th
 - [Observability](#observability)
   - [context.metrics](#contextmetrics)
   - [context.health](#contexthealth)
+- [Graph Tools](#graph-tools)
+  - [context.graph.query](#contextgraphquery)
+  - [context.graph.export](#contextgraphexport)
+  - [context.graph.import](#contextgraphimport)
 - [Setup Tools](#setup-tools)
   - [context.setup](#contextsetup)
 - [Changes since v0.7.1](#changes-since-v071)
@@ -418,7 +423,7 @@ The orientation loop: "Where am I in time? What happened while I was offline? Wh
 
 ### context.searchCode
 
-Search the project's source code index. Supports three modes: full-text search, symbol search (functions/classes/types by name), and semantic search (natural-language similarity using embeddings). The index is built automatically on first use and stays up-to-date via file watching.
+Search the project's source code index. Supports three modes: full-text search, symbol search (functions/classes/types by name), and semantic search (natural-language similarity using embeddings). The index is built automatically on first use and stays up-to-date via file watching. TypeScript/JavaScript indexing recognizes imports, exports, functions, classes, methods, interfaces, type aliases, enums, constants, and test declarations, while definition results rank above import/export references.
 
 #### Parameters
 
@@ -493,6 +498,52 @@ Search the project's source code index. Supports three modes: full-text search, 
 
 **Tier 2** (functions and classes):
 - Java, C#, Ruby, C/C++
+
+---
+
+### context.codeIndexRepair
+
+Inspect and optionally repair the project code index. Detects stale indexes, deleted files, and missing or corrupted chunk embeddings. With `dryRun: true`, the tool reports issues without mutating the index.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `projectPath` | string | No | Project path. Defaults to current working directory |
+| `dryRun` | boolean | No | If true, report issues without repairing (default: `false`) |
+
+#### Example Request
+
+```json
+{
+  "projectPath": "/home/user/myapp",
+  "dryRun": true
+}
+```
+
+#### Example Response
+
+```json
+{
+  "dryRun": true,
+  "health": {
+    "status": "ok",
+    "totalFiles": 42,
+    "totalSymbols": 187,
+    "staleFiles": [],
+    "deletedFiles": [],
+    "missingEmbeddings": 0,
+    "corruptedChunks": []
+  },
+  "repair": {
+    "scanned": 42,
+    "removedFiles": 0,
+    "reindexedFiles": 0,
+    "reembeddedChunks": 0,
+    "issues": []
+  }
+}
+```
 
 ---
 
@@ -1303,7 +1354,7 @@ Health check. Validates L2 and L3 SQLite connectivity, embedding model presence,
 ```json
 {
   "status": "ok",
-  "version": "0.12.1",
+  "version": "0.14.0",
   "checks": [
     { "name": "l2", "status": "ok" },
     { "name": "l3", "status": "ok" },
@@ -1317,13 +1368,105 @@ When a check fails, `status` becomes `degraded` and the failing check carries an
 
 ---
 
+## Graph Tools
+
+The scoped fabric graph models projects, sessions, files, symbols, memories, decisions, errors, and skills as temporal entities connected by typed relationships. Graph tools are useful for lineage, neighborhood, timeline, and migration workflows.
+
+### context.graph.query
+
+Query the scoped fabric temporal graph for neighbors, timelines, decision lineage, current/as-of decisions, or short paths.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `op` | string | Yes | One of `neighbors`, `lineage`, `decisions`, `timeline`, `path` |
+| `entityId` | string | No | Entity id for `neighbors`, `lineage`, or `timeline` |
+| `fromEntityId` | string | No | Path source entity id |
+| `toEntityId` | string | No | Path target entity id |
+| `direction` | string | No | `out`, `in`, or `both` (default: `both`) |
+| `type` | string | No | Optional relationship type filter |
+| `asOf` | number | No | Epoch milliseconds for temporal as-of queries |
+| `currentOnly` | boolean | No | For `decisions`, return only currently-effective decisions |
+| `maxDepth` | number | No | Maximum path traversal depth (default: `4`) |
+| `projectPath` | string | No | Project path |
+
+#### Example Request
+
+```json
+{
+  "op": "decisions",
+  "currentOnly": true,
+  "projectPath": "/home/user/myapp"
+}
+```
+
+#### Example Response
+
+```json
+{
+  "decisions": [
+    {
+      "id": "memory:decision-123",
+      "kind": "decision",
+      "label": "Use Postgres for durable event storage",
+      "validFrom": 1777392000000
+    }
+  ]
+}
+```
+
+### context.graph.export
+
+Export graph entities and relationships to deterministic JSON for backup, migration, or rebuild validation.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `destPath` | string | Yes | Absolute JSON path to write |
+| `projectPath` | string | No | Project path |
+
+#### Example Request
+
+```json
+{
+  "destPath": "/home/user/backups/context-graph.json",
+  "projectPath": "/home/user/myapp"
+}
+```
+
+### context.graph.import
+
+Import scoped fabric graph JSON previously produced by `context.graph.export`.
+
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `srcPath` | string | Yes | Absolute JSON path to read |
+| `projectPath` | string | No | Project path |
+
+#### Example Request
+
+```json
+{
+  "srcPath": "/home/user/backups/context-graph.json",
+  "projectPath": "/home/user/myapp"
+}
+```
+
+---
+
 ## Changes since v0.7.1
 
-This document reflects v0.12.x. For the full per-version changelog, see [CHANGELOG.md](../CHANGELOG.md). At a glance:
+This document reflects v0.14.0. For the full per-version changelog, see [CHANGELOG.md](../CHANGELOG.md). At a glance:
 
 - **v0.8 – v0.10**: `context.storeBatch`, `context.backup`, `context.export`/`context.import`, `context.metrics`, `context.health`. Pagination on `context.recall` and `context.list`. Weight multiplier on memories. Hybrid search.
 - **v0.11**: Provenance, dedup-on-store, bi-temporal (`asOf` / `includeSuperseded` on recall; `supersedes` on store). See [Memory Types](memory-types.md#provenance-v011).
 - **v0.12**: Skills (six `context.skill.*` tools), `context.importDocs`, MCP Resources (`memory://...`), MCP Prompts (`cf-*` slash-commands). See [Skills](skills.md) and [MCP Primitives](mcp-primitives.md).
+- **v0.13**: Bundled `sqlite-vec` ANN acceleration, public benchmark harnesses, and GPU setup helpers.
+- **v0.14**: Explainable retrieval scoring/artifacts, diagnostic ranking-preservation fixes, scoped fabric graph tools, code-index repair, and code-aware current-context improvements.
 
 ### Tools consolidated before v0.8
 
