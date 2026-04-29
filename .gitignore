@@ -64,3 +64,6 @@ local_cache/
 
 # Project-local CUDA 12 runtime libs (installed by scripts/setup-gpu.sh)
 .cuda-libs/
+
+# Local planning docs (sprint plans, design scratch)
+/plans/
