@@ -2,25 +2,27 @@
 
 Reproducible numbers for Context Fabric's retrieval quality on public IR and long-term-memory benchmarks. All runs drive `ContextEngine` in-process (no MCP round-trip) against the hybrid recall path used at runtime (FTS5 BM25 + vector cosine + Reciprocal Rank Fusion, optionally KNN-accelerated by `sqlite-vec`).
 
-Runs on this page were measured on a single commodity workstation (AMD Ryzen 7 5800H, NVIDIA RTX 3060 12 GB, Node.js 25, fastembed-js 1.14.4 / ONNX Runtime 1.21) on 2026-04-23 using commit `30d2173`.
+Runs on this page were measured on a single commodity workstation (AMD Ryzen 7 5800H, NVIDIA RTX 3060 12 GB, Node.js 25, fastembed-js 1.14.4 / ONNX Runtime 1.21) across the v0.13 published run and final v0.14 release-validation reruns.
 
 ## Headlines
 
-| Benchmark | Metric | Context Fabric (v0.13, GPU) | Published reference |
-|---|---|---:|---|
-| BEIR SciFact (5,183 docs) | nDCG@10 | **0.7439** | bge-base-en-v1.5 dense-only: 0.740 |
-| BEIR SciFact | Recall@100 | **0.9667** | OpenAI text-embedding-3-small: ~0.93 |
-| BEIR FiQA-2018 (57,638 docs) | nDCG@10 | **0.3801** | bge-base-en-v1.5 dense-only: 0.406 |
-| BEIR FiQA-2018 | Recall@100 | **0.7361** | OpenAI text-embedding-3-small: ~0.69 |
-| LongMemEval_S (500 questions, 25,112 sessions) | Hit@5 | **0.9520** | Zep/Mem0 retrieval layer: ≈0.85 |
-| LongMemEval_S | Recall@10 | **0.9472** | — |
-| All three | Query p50 | **14.6 – 91 ms** | 13–32× faster than without `sqlite-vec` |
+The table below captures the original published v0.13 baseline plus final v0.14 end-state reruns from the same cached benchmark environment used during release validation. The v0.14 work adds diagnostic artifact output and ranking-preservation tests; it does not ship cross-encoder reranking.
 
-Headline one-liner: **on Recall@100 (the metric that matters for agent memory where an LLM reranks the recalled set) we match or beat OpenAI's `text-embedding-3-small` on both BEIR subsets, and our LongMemEval retrieval layer clears the published "good retrieval" threshold by ≈10 points.**
+| Benchmark | Metric | v0.13 published | v0.14 final rerun | Published reference |
+|---|---|---:|---:|---|
+| BEIR SciFact (5,183 docs) | nDCG@10 | 0.7439 | 0.7439 | bge-base-en-v1.5 dense-only: 0.740 |
+| BEIR SciFact | Recall@100 | 0.9667 | 0.9667 | OpenAI text-embedding-3-small: ~0.93 |
+| BEIR FiQA-2018 (57,638 docs) | nDCG@10 | 0.3801 | 0.3801 | bge-base-en-v1.5 dense-only: 0.406 |
+| BEIR FiQA-2018 | Recall@100 | 0.7361 | 0.7361 | OpenAI text-embedding-3-small: ~0.69 |
+| LongMemEval_S (500 questions, 25,112 sessions) | Hit@5 | **0.9520** | 0.9200 | Zep/Mem0 retrieval layer: ≈0.85 |
+| LongMemEval_S | Recall@10 | **0.9472** | 0.9210 | — |
+| All three | Query p50 | 14.6 – 91 ms | **10.6 – 89.2 ms** | 13–32× faster than without `sqlite-vec` |
+
+Headline one-liner: **v0.14 preserves the low-latency local hybrid retrieval path, keeps BEIR quality stable in final release validation, and adds artifact-level observability so LongMemEval regressions can be investigated from per-question evidence instead of aggregate guesses.**
 
 ## Retrieval config under test
 
-Unless otherwise noted these numbers use Context Fabric's defaults as of v0.13:
+Unless otherwise noted these numbers use Context Fabric's local hybrid retrieval path as of v0.13/v0.14:
 
 - Embedder: `bge-small-en-v1.5` (default) or `bge-base-en-v1.5` (opt-in via `CONTEXT_FABRIC_EMBED_MODEL=BGEBaseENV15`)
 - Query-side instruction prefix applied automatically based on model family (BGE queries get `"Represent this sentence for searching relevant passages: "`; passages unprefixed)
@@ -34,8 +36,9 @@ Scientific-claim retrieval. 5,183 abstracts, 300 queries, binary relevance.
 
 | Config | Embedder | EP | nDCG@10 | Recall@1 | Recall@10 | Recall@100 | MRR@10 | Ingest | Query p50 | Wall |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Small, CPU | bge-small-en-v1.5 | cpu | 0.7158 | 0.5809 | 0.8362 | 0.9417 | 0.6876 | 10.8 docs/s | 99 ms | 509 s |
-| Base, GPU | bge-base-en-v1.5 | cuda | **0.7439** | **0.5966** | **0.8709** | **0.9667** | **0.7100** | **169.2 docs/s** | **20 ms** | **37 s** |
+| Small, CPU (v0.14 final rerun) | bge-small-en-v1.5 | cpu | 0.7158 | 0.5809 | 0.8362 | 0.9417 | 0.6876 | 11.7 docs/s | 84.7 ms | 470.3 s |
+| Base, GPU (v0.13 published) | bge-base-en-v1.5 | cuda | 0.7439 | 0.5966 | 0.8709 | 0.9667 | 0.7100 | 169.2 docs/s | 20 ms | 37 s |
+| Base, GPU (v0.14 final rerun) | bge-base-en-v1.5 | cuda | 0.7439 | 0.5966 | 0.8709 | 0.9667 | 0.7100 | 177.1 docs/s | 20.4 ms | 35.5 s |
 
 ### Reference points on SciFact
 
@@ -44,9 +47,9 @@ Scientific-claim retrieval. 5,183 abstracts, 300 queries, binary relevance.
 | BM25 (Anserini) | sparse | 0.691 | $0 |
 | Contriever (unsupervised) | 110M | 0.649 | $0 |
 | bge-small-en-v1.5 (dense-only) | 33M | 0.713 | $0 |
-| **Context Fabric — bge-small-en-v1.5 + RRF (CPU)** | **33M** | **0.7158** | **$0** |
+| **Context Fabric — bge-small-en-v1.5 + RRF (CPU, v0.14 final)** | **33M** | **0.7158** | **$0** |
 | bge-base-en-v1.5 (dense-only) | 110M | 0.740 | $0 |
-| **Context Fabric — bge-base-en-v1.5 + RRF (GPU)** | **110M** | **0.7439** | **$0** |
+| **Context Fabric — bge-base-en-v1.5 + RRF (GPU, v0.14 final)** | **110M** | **0.7439** | **$0** |
 | ada-002 (legacy OpenAI) | API | 0.736 | $0.10 / 1M tok |
 | bge-large-en-v1.5 (dense-only) | 335M | 0.746 | $0 |
 | Cohere embed-english-v3 | API | 0.772 | $0.10 / 1M tok |
@@ -60,7 +63,8 @@ Financial-domain question answering. 57,638 forum documents, 648 queries, graded
 
 | Config | Embedder | EP | nDCG@10 | Recall@1 | Recall@10 | Recall@100 | MRR@10 | Ingest | Query p50 | Wall |
 |---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Base, GPU | bge-base-en-v1.5 | cuda | **0.3801** | 0.1795 | **0.4623** | **0.7361** | **0.4419** | **177.4 docs/s** | **91 ms** | **384 s** |
+| Base, GPU (v0.13 published) | bge-base-en-v1.5 | cuda | 0.3801 | 0.1795 | 0.4623 | 0.7361 | 0.4419 | 177.4 docs/s | 91 ms | 384 s |
+| Base, GPU (v0.14 final rerun) | bge-base-en-v1.5 | cuda | 0.3801 | 0.1795 | 0.4623 | 0.7361 | 0.4419 | 183.9 docs/s | 89.2 ms | 372.2 s |
 
 ### Reference points on FiQA
 
@@ -69,7 +73,7 @@ Financial-domain question answering. 57,638 forum documents, 648 queries, graded
 | BM25 | 0.236 | — |
 | OpenAI ada-002 | 0.361 | — |
 | OpenAI text-embedding-3-small | 0.397 | ~0.69 |
-| **Context Fabric — bge-base-en-v1.5 + RRF (GPU)** | **0.3801** | **0.7361** |
+| **Context Fabric — bge-base-en-v1.5 + RRF (GPU, v0.14 final)** | 0.3801 | 0.7361 |
 | bge-small-en-v1.5 (dense-only) | 0.403 | — |
 | bge-base-en-v1.5 (dense-only) | 0.406 | — |
 | Cohere embed-v3 | 0.419 | — |
@@ -80,7 +84,7 @@ FiQA is the hardest of the small-scale BEIR subsets because queries are natural-
 
 Retrieval-only evaluation on the LongMemEval_S variant (Wu et al., ICLR 2025; `xiaowu0162/longmemeval` on HuggingFace). For each of 500 questions we ingest that question's haystack sessions as L3 memories (one memory per session), issue the question through `engine.recall()`, and measure whether the gold `answer_session_ids` appear in the top-k. This isolates the retrieval substrate — no LLM judge involved — so numbers on this page are not directly comparable to the end-to-end accuracy figures that Zep, Mem0, and MemGPT publish.
 
-### Overall (500 questions, 25,112 sessions ingested)
+### Overall — v0.13 published (500 questions, 25,112 sessions ingested)
 
 | k | Hit@k | Recall@k |
 |---:|---:|---:|
@@ -92,7 +96,20 @@ Retrieval-only evaluation on the LongMemEval_S variant (Wu et al., ICLR 2025; `x
 - Query p50 = 14.6 ms · p95 = 16.6 ms · p99 = 17.3 ms
 - Wall total = 188 s (roughly 3 minutes, dominated by ephemeral-engine setup across 500 isolated haystacks, not by recall itself)
 
-### By question type
+### v0.14 final reruns with diagnostic artifacts
+
+Final release-validation reruns on 2026-04-29 under the current cached runtime/dataset environment:
+
+| EP | Hit@1 | Recall@1 | Hit@5 | Recall@5 | Hit@10 | Recall@10 | Query p50 | Query p95 | Wall |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| cuda | 0.7740 | 0.4840 | 0.9200 | 0.8661 | 0.9560 | 0.9210 | 10.6 ms | 19.4 ms | 191.6 s |
+| cpu | 0.7740 | 0.4840 | 0.9200 | 0.8661 | 0.9560 | 0.9210 | 83.7 ms | 138.1 ms | 2131.7 s |
+
+Artifact output is available with `BENCH_ARTIFACT_JSONL=/path/to/results.jsonl`, which records per-question rankings, component scores, boosts, provenance, and latency.
+
+The historical v0.13 LongMemEval number did not reproduce from the original workspace under the current cached runtime/dataset environment during release prep. The v0.14 release therefore adds artifact-level diagnostics and regression guards for ranking-preservation rather than treating a stale aggregate as a tuning target.
+
+### By question type — v0.13 published
 
 | Category | n | Hit@1 | Hit@5 | Hit@10 | Recall@5 | Recall@10 |
 |---|---:|---:|---:|---:|---:|---:|
@@ -203,6 +220,7 @@ scripts/bench-gpu.sh -- env CONTEXT_FABRIC_EMBED_MODEL=BGEBaseENV15 \
 | `BENCH_QUESTION_LIMIT` | all | LongMemEval-specific question cap |
 | `LME_VARIANT` | `longmemeval_s` | `longmemeval_s` \| `longmemeval_m` \| `longmemeval_oracle` |
 | `LME_URL` | HF default | Override for the LongMemEval data URL |
+| `BENCH_ARTIFACT_JSONL` | unset | LongMemEval-specific JSONL artifact path. When set, writes per-question rankings, component scores, boosts, provenance, and latency without changing default ranking |
 | `CF_DISABLE_SQLITE_VEC` | (unset) | Set to `1` to force the FTS5-prefiltered cosine path |
 
 ## What's being measured — and what isn't
